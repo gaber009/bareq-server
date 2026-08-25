@@ -2013,7 +2013,7 @@ tbody tr:hover {
     <div class="om-xls-titlebar" id="tafrighSheetTitlebar">بيانات المركبات</div>
     <div class="om-xls-scroll tafrigh-xls-scroll">
       <table class="om-xls-grid" id="tafrighDataTable">
-        <thead><tr><th>رقم اللوحة</th><th>GPS</th><th>تاريخ التسجيل</th><th>الحي</th><th>الشارع</th><th>ملاحظات</th><th>نوع السيارة</th><th>اسم المسجّل</th><th>موقع الشارع</th><th></th></tr></thead>
+        <thead><tr><th>رقم اللوحة</th><th>GPS</th><th>الحي</th><th>الشارع</th><th>ملاحظات</th><th>نوع السيارة</th><th>موقع الشارع</th><th></th></tr></thead>
         <tbody id="excelBody"></tbody>
       </table>
     </div>
@@ -4268,12 +4268,10 @@ function renderTable(){
     tr.innerHTML=
       '<td class="td-plate td-edit" contenteditable="true" onblur="editCell('+i+',\'full_plate\',this.textContent)">'+esc(row.full_plate||row.plate||'')+'</td>'
       +'<td class="td-gps">'+(row.gps&&row.gps.trim()&&row.gps!=='—'?'<a href="https://www.google.com/maps?q='+encodeURIComponent(row.gps.trim())+'" target="_blank" rel="noopener" style="color:#4fc3f7;text-decoration:underline;font-size:.78rem">'+esc(row.gps.trim())+'</a>':'—')+'</td>'
-      +'<td class="td-edit" style="font-family:var(--mono);font-size:.78rem" contenteditable="true" onblur="editCell('+i+',\'recording_date\',this.textContent)">'+esc(row.recording_date||'')+'</td>'
       +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'district_name\',this.textContent)">'+esc(row.district_name||'')+'</td>'
       +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'street_name\',this.textContent)">'+esc(row.street_name||'')+'</td>'
       +'<td class="td-edit td-locdetails" style="font-size:.78rem;color:var(--dim2)" contenteditable="true" onblur="editCell('+i+',\'notes\',this.textContent)">'+esc(row.notes||row.location_details||'')+'</td>'
       +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'vehicle_type\',this.textContent)">'+esc(row.vehicle_type||'')+'</td>'
-      +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'recorder_name\',this.textContent)">'+esc(row.recorder_name||'')+'</td>'
       +'<td class="td-gps">'+esc(streetLocForRow(row)||'—')+'</td>'
       +'<td><button class="del-row" onclick="deleteRow('+i+')">✕</button></td>';
     body.appendChild(tr);
