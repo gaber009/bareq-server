@@ -4508,39 +4508,48 @@ async function detectColForSide(side){
   if(side!=='large' || !checkLargeFile) return;
   const fd=new FormData();
   fd.append('large_file',checkLargeFile);
+  fd.append('file',checkLargeFile);
+  fd.append('large',checkLargeFile);
   const pw=document.getElementById('largePw').value.trim();
   if(pw) fd.append('password',pw);
   setBadge('large','pending','...');
   try{
     const res=await fetch('/api/check-headers',{method:'POST',body:fd});
     if(!res.ok){
-      setBadge('large','notfound','\u26A0 \u062E\u0637\u0623');
+      setBadge('large','notfound','⚠ خطأ');
       showCheckStatus('err','فشل تجهيز ملف التشيك. حاول مرة أخرى.',false);
       return;
     }
     const data=await res.json();
-    const info=data.large;
-    if(!info){return;}
+    const info=data.large || data;
+    const headers = info.headers || data.headers || data.cols || data.columns || [];
     if(info.error){
-      setBadge('large','notfound','\u26A0 '+info.error.slice(0,30));
+      setBadge('large','notfound','⚠ '+info.error.slice(0,30));
       showCheckStatus('err','تعذر قراءة ملف التشيك: '+String(info.error||''),false);
       return;
     }
-    fillColDropdown('large',info.headers||[],document.getElementById('largeCol').value.trim());
-    if(info.detected&&!document.getElementById('largeCol').value.trim()){
-      document.getElementById('largeCol').value=info.detected;
-      checkDetected.large=info.detected;
-      setBadge('large','found','\u2714 \u062A\u0644\u0642\u0627\u0626\u064A');
+    
+    // Determine detected plate column
+    let detected = info.detected || data.detected_col || data.detected || '';
+    if(!detected && Array.isArray(headers)){
+      detected = headers.find(h => typeof h === 'string' && (h.includes('لوح') || h.includes('لوحة') || h.toLowerCase().includes('plate'))) || headers[0] || '';
+    }
+    
+    fillColDropdown('large', headers, document.getElementById('largeCol').value.trim());
+    if(detected && !document.getElementById('largeCol').value.trim()){
+      document.getElementById('largeCol').value = detected;
+      checkDetected.large = detected;
+      setBadge('large','found','✔ تلقائي');
     } else if(document.getElementById('largeCol').value.trim()){
-      setBadge('large','found','\u25BE \u0645\u062E\u062A\u0627\u0631');
-    } else if(!info.detected){
-      setBadge('large','notfound','؟ \u063A\u064A\u0631 \u0645\u0643\u062A\u0634\u0641');
-      if(info.headers&&info.headers.length) showHeadersHint('large',info.headers);
+      setBadge('large','found','▾ مختار');
+    } else if(!detected){
+      setBadge('large','notfound','؟ غير مكتشف');
+      if(headers && headers.length) showHeadersHint('large',headers);
     }
     if(typeof checkLiveSendPlateColumn==='function') checkLiveSendPlateColumn();
-    showCheckStatus('ok','✅ تم تجهيز ملف التشيك ويمكنك البدء الآن.',false);
+    showCheckStatus('ok','✅ تم تجهيز ملف التشيك واستخراج ' + headers.length + ' أعمدة.',false);
   }catch(e){
-    setBadge('large','notfound','\u26A0');
+    setBadge('large','notfound','⚠');
     showCheckStatus('err','فشل تجهيز ملف التشيك. تحقق من الاتصال ثم أعد المحاولة.',false);
   }
 }

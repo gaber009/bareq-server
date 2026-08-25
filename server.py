@@ -695,19 +695,45 @@ async def get_debug_wav():
 
 @app.post("/api/check-headers")
 async def check_headers(request: Request):
-    headers = ["رقم اللوحة", "نوع السيارة", "تاريخ التسجيل", "ملاحظات", "GPS", "الحي", "الشارع"]
+    headers = ["رقم اللوحة", "نوع السيارة", "ملاحظات", "GPS", "الحي", "الشارع"]
+    detected_col = ""
     try:
         form = await request.form()
-        file = form.get("file") or form.get("large")
+        file = form.get("large_file") or form.get("file") or form.get("large") or form.get("small_file") or form.get("small")
         if file:
             content = await file.read()
-            wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
-            sheet = wb.active
-            first_row = next(sheet.iter_rows(values_only=True), None)
-            if first_row:
-                parsed_h = [str(c) for c in first_row if c is not None and str(c).strip()]
-                if parsed_h:
-                    headers = parsed_h
+            # Try openpyxl for xlsx/xlsm
+            try:
+                wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
+                sheet = wb.active
+                for row in sheet.iter_rows(values_only=True):
+                    parsed = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                    if parsed and len(parsed) >= 1:
+                        headers = parsed
+                        break
+            except Exception as xe:
+                # Try CSV or fallback
+                import csv
+                try:
+                    text_str = content.decode("utf-8-sig", errors="ignore")
+                    reader = csv.reader(io.StringIO(text_str))
+                    for r in reader:
+                        parsed = [c.strip() for c in r if c.strip()]
+                        if parsed:
+                            headers = parsed
+                            break
+                except Exception:
+                    pass
+
+        # Auto detect plate column
+        for h in headers:
+            h_clean = h.strip()
+            if any(kw in h_clean for kw in ["لوحة", "لوحه", "اللوحة", "رقم اللوحة", "plate", "Plate", "PLATE", "اللوح"]):
+                detected_col = h
+                break
+        if not detected_col and headers:
+            detected_col = headers[0]
+
     except Exception as e:
         print("check-headers exception:", e)
         
@@ -716,28 +742,42 @@ async def check_headers(request: Request):
         "headers": headers,
         "cols": headers,
         "columns": headers,
-        "detected_col": "رقم اللوحة",
-        "detected_column": "رقم اللوحة"
+        "detected": detected_col,
+        "detected_col": detected_col,
+        "detected_column": detected_col,
+        "large": {
+            "headers": headers,
+            "detected": detected_col
+        }
     }
 
 @app.post("/api/check-live/ref-plates-upload")
 @app.post("/api/check-live/upload-excel")
 async def check_live_upload_excel(request: Request):
-    headers = ["رقم اللوحة", "نوع السيارة", "الحي", "الشارع", "تاريخ التسجيل", "ملاحظات"]
+    headers = ["رقم اللوحة", "نوع السيارة", "الحي", "الشارع", "ملاحظات"]
     total_plates = 0
+    detected_col = "رقم اللوحة"
     try:
         form = await request.form()
-        file = form.get("file") or form.get("large")
+        file = form.get("file") or form.get("large_file") or form.get("large")
         if file:
             content = await file.read()
-            wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
-            sheet = wb.active
-            rows = list(sheet.iter_rows(values_only=True))
-            if rows:
-                parsed_h = [str(c) for c in rows[0] if c is not None and str(c).strip()]
-                if parsed_h:
-                    headers = parsed_h
-                total_plates = max(0, len(rows) - 1)
+            try:
+                wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
+                sheet = wb.active
+                rows = list(sheet.iter_rows(values_only=True))
+                if rows:
+                    parsed_h = [str(c).strip() for c in rows[0] if c is not None and str(c).strip()]
+                    if parsed_h:
+                        headers = parsed_h
+                    total_plates = max(0, len(rows) - 1)
+            except Exception:
+                pass
+                
+        for h in headers:
+            if any(kw in h for kw in ["لوحة", "لوحه", "اللوحة", "plate", "Plate"]):
+                detected_col = h
+                break
     except Exception as e:
         print("check-live upload-excel error:", e)
 
@@ -749,7 +789,12 @@ async def check_live_upload_excel(request: Request):
         "headers": headers,
         "columns": headers,
         "cols": headers,
-        "detected_col": "رقم اللوحة"
+        "detected": detected_col,
+        "detected_col": detected_col,
+        "large": {
+            "headers": headers,
+            "detected": detected_col
+        }
     }
 
 
