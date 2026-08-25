@@ -4445,6 +4445,24 @@ async function detectColForSide(side){
   fd.append('large_file',checkLargeFile);
   const pw=document.getElementById('largePw').value.trim();
   if(pw) fd.append('password',pw);
+  setBadge('large','pending','...');
+  try{
+    const res=await fetch('/api/check-headers',{method:'POST',body:fd});
+    if(!res.ok){
+      setBadge('large','notfound','\u26A0 \u062E\u0637\u0623');
+      showCheckStatus('err','فشل تجهيز ملف التشيك. حاول مرة أخرى.',false);
+      return;
+    }
+    const data=await res.json();
+    const info=data.large;
+    if(!info){return;}
+    if(info.error){
+      setBadge('large','notfound','\u26A0 '+info.error.slice(0,30));
+      showCheckStatus('err','تعذر قراءة ملف التشيك: '+String(info.error||''),false);
+      return;
+    }
+    fillColDropdown('large',info.headers||[],document.getElementById('largeCol').value.trim());
+    if(info.detected&&!document.getElementById('largeCol').value.trim()){
       document.getElementById('largeCol').value=info.detected;
       checkDetected.large=info.detected;
       setBadge('large','found','\u2714 \u062A\u0644\u0642\u0627\u0626\u064A');
@@ -4459,6 +4477,21 @@ async function detectColForSide(side){
   }catch(e){
     setBadge('large','notfound','\u26A0');
     showCheckStatus('err','فشل تجهيز ملف التشيك. تحقق من الاتصال ثم أعد المحاولة.',false);
+  }
+}
+function showHeadersHint(side,headers){
+  if(side!=='large') return;
+  const box=document.getElementById('checkHeadersHint');
+  const content=document.getElementById('checkHeadersContent');
+  box.style.display='';
+  const label='\u0627\u0644\u0645\u0644\u0641';
+  const ti='largeCol';
+  content.innerHTML+='<p style="margin-bottom:.5rem"><strong style="color:var(--violet)">'+label+':</strong> \u0627\u062E\u062A\u0631 \u0639\u0645\u0648\u062F \u0627\u0644\u0644\u0648\u062D\u0629:</p><div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.8rem">'+
+    headers.map(h=>h?'<button onclick="document.getElementById(\''+ti+'\').value=\''+esc(h)+'\';setBadge(\'large\',\'found\',\'\u270E \u064A\u062F\u0648\u064A\');document.getElementById(\'checkHeadersHint\').style.display=\'none\';if(typeof checkLiveSendPlateColumn===\'function\')checkLiveSendPlateColumn();" style="padding:.3rem .7rem;background:var(--s2);border:1px solid var(--brd2);border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:.75rem;color:var(--text);transition:all .18s" onmouseover="this.style.borderColor=\'var(--violet)\';this.style.color=\'var(--violet)\'" onmouseout="this.style.borderColor=\'var(--brd2)\';this.style.color=\'var(--text)\'">'+esc(h)+'</button>':'').join('')+'</div>';
+}
+function togglePw(inputId,btn){const inp=document.getElementById(inputId);inp.type=inp.type==='password'?'text':'password';btn.textContent=inp.type==='password'?'\u{1F441}':'\u{1F648}';}
+async function confirmLargePw(){
+  if(!checkLargeFile){showCheckStatus('err','\u064A\u0631\u062C\u0649 \u0631\u0641\u0639 \u0627\u0644\u0645\u0644\u0641 \u0623\u0648\u0644\u0627\u064B');return;}
   resetCheckDetect();
   await detectColForSide('large');
   await checkLiveRefUploadCurrentFile();
