@@ -352,6 +352,24 @@ SPATIAL_LETTER_WORDS = [
     ('ياء', 'ى'), ('يا', 'ى')
 ]
 
+def _detect_audio_info(data: bytes) -> tuple[str, str]:
+    """Detect actual audio MIME type and extension from binary headers"""
+    if not data or len(data) < 8:
+        return ("audio/wav", "wav")
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WAVE":
+        return ("audio/wav", "wav")
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return ("audio/webm", "webm")
+    if data.startswith(b"OggS"):
+        return ("audio/ogg", "ogg")
+    if data.startswith(b"ID3") or data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return ("audio/mp3", "mp3")
+    if b"ftyp" in data[:24]:
+        return ("audio/mp4", "mp4")
+    if data.startswith(b"fLaC"):
+        return ("audio/flac", "flac")
+    return ("audio/webm", "webm")
+
 NUM_WORDS = [
     ('واحد', '1'), ('اثنين', '2'), ('إثنين', '2'), ('اتنين', '2'), ('تنين', '2'),
     ('ثلاثة', '3'), ('تلاتة', '3'), ('ثلاثه', '3'), ('تلاته', '3'),
@@ -365,17 +383,10 @@ NUM_WORDS = [
 ]
 
 def _parse_plates_from_arabic_text(text: str) -> list:
-    """Parse license plates from transcribed text with full phonetic normalization"""
+    """Parse multiple or single license plates from transcribed text with full phonetic normalization"""
     if not text:
         return []
-    try:
-        from plate_decoder import get_decoder
-        dec = get_decoder().decode_final(text)
-        if dec.get("valid") and dec.get("plate"):
-            return [{"plate": dec["plate"], "found": True, "vehicle_type": "تويوتا", "notes": ""}]
-    except Exception:
-        pass
-
+    
     import re
     t = text
     for w, d in NUM_WORDS:
@@ -383,6 +394,7 @@ def _parse_plates_from_arabic_text(text: str) -> list:
         t = t.replace(w, d)
     for w, l in SPATIAL_LETTER_WORDS:
         t = re.sub(r'\b' + re.escape(w) + r'\b', l, t)
+        t = t.replace(w, l)
 
     # Merge isolated digit sequences (e.g. "1 2 3 4" -> "1234")
     prev = ""
@@ -391,22 +403,28 @@ def _parse_plates_from_arabic_text(text: str) -> list:
         t = re.sub(r'(\d)\s+(\d)', r'\1\2', t)
 
     plates = []
-    # Pattern 1: Spaced 3 letters + 1-4 digits (e.g. "أ ب د 1234" or "ح ب س 9500")
-    matches = re.findall(r'([أ-يى]\s+[أ-يى]\s+[أ-يى]\s+\d{1,4})', t)
-    for m in matches:
-        clean = " ".join(m.split())
-        plates.append({"plate": clean, "found": True, "vehicle_type": "تويوتا", "notes": ""})
+    # Pattern: 3 letters + 1-4 digits (handles spaced or unspaced letters)
+    matches = re.findall(r'([أ-يى]\s*[أ-يى]\s*[أ-يى])\s*(\d{1,4})', t)
+    for letters_raw, digits in matches:
+        lets = [c for c in letters_raw if c not in (' ', '\t')]
+        if len(lets) == 3:
+            plate_fmt = f"{lets[0]} {lets[1]} {lets[2]} {digits}"
+            plates.append({"plate": plate_fmt, "found": True, "vehicle_type": "تويوتا", "notes": ""})
 
-    # Pattern 2: Attached letters + digits (e.g. "أبد 1234" or "حبس 9500")
+    # If no plates matched with regex, try fallback to plate_decoder if available
     if not plates:
-        matches2 = re.findall(r'([أ-يى]{3})\s*(\d{1,4})', t)
-        for letters, digits in matches2:
-            spaced = f"{letters[0]} {letters[1]} {letters[2]} {digits}"
-            plates.append({"plate": spaced, "found": True, "vehicle_type": "تويوتا", "notes": ""})
+        try:
+            from plate_decoder import get_decoder
+            dec = get_decoder().decode_final(text)
+            if dec.get("valid") and dec.get("plate"):
+                plates.append({"plate": dec["plate"], "found": True, "vehicle_type": "تويوتا", "notes": ""})
+        except Exception:
+            pass
+
     return plates
 
-def _call_groq_whisper(cfg: dict, wav_data: bytes) -> list:
-    """Ultra-fast Whisper transcription via Groq (100-200ms)"""
+def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
+    """Ultra-fast Whisper transcription via Groq (100-200ms) with auto-MIME detection"""
     groq_keys = cfg.get("groq_keys", [])
     if not groq_keys and cfg.get("groq_api_key"):
         groq_keys = [cfg.get("groq_api_key")]
@@ -414,43 +432,41 @@ def _call_groq_whisper(cfg: dict, wav_data: bytes) -> list:
     if not groq_keys:
         return []
     
+    mime_type, ext = _detect_audio_info(audio_data)
+    filename = f"speech.{ext}"
+    
     for key in groq_keys:
         try:
             headers = {"Authorization": f"Bearer {key}"}
-            files = {"file": ("speech.wav", wav_data, "audio/wav")}
+            files = {"file": (filename, audio_data, mime_type)}
             data = {
                 "model": "whisper-large-v3-turbo",
                 "language": "ar",
                 "temperature": "0.0",
                 "prompt": "أ ب ج د ر س ص ط ع ق ك ل م ن هـ و ى أ م د 1234 أ ب م 1234 أ ب ج 1234 واحد اثنين ثلاثة أربعة خمسة ستة سبعة ثمانية تسعة"
             }
-            resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=8)
+            resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=10)
             if resp.status_code == 200:
                 transcribed = resp.json().get("text", "")
-                print(f"Groq Whisper OK: '{transcribed}'")
+                print(f"[Groq Whisper OK] '{transcribed}'")
                 plates = _parse_plates_from_arabic_text(transcribed)
                 if plates:
                     return plates
             else:
-                print(f"Groq Whisper code {resp.status_code}: {resp.text[:100]}")
+                print(f"[Groq Whisper] HTTP {resp.status_code}: {resp.text[:120]}")
         except Exception as e:
-            print(f"Groq Whisper error: {e}")
+            print(f"[Groq Whisper Error] {e}")
     return []
 
 def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: str = "rest") -> dict:
-    """Call Gemini API with automatic key AND model rotation on 429/503.
-    
-    Each model has its own independent rate limit quota on Google's free tier.
-    By cycling through multiple models, we multiply our effective quota.
-    """
+    """Call Gemini API with automatic key AND verified model rotation on 429/503/404."""
     import time
-
-    # Fallback model chain — each has separate quota (~15 RPM each on free tier)
     FALLBACK_MODELS = [
+        "gemini-2.5-flash",
         "gemini-flash-latest",
-        "gemini-3.6-flash",
+        "gemini-2.5-flash-lite",
         "gemini-flash-lite-latest",
-        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
     ]
 
     pool_field = "gemini_rest_keys" if kind == "rest" else "gemini_live_keys"
@@ -461,8 +477,11 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
     if not keys:
         raise Exception("لا يوجد مفتاح Gemini — أضف مفتاحاً من لوحة الإدارة")
 
-    req_timeout = 4 if kind == "live" else 25
-    models_to_try = FALLBACK_MODELS[:2] if kind == "live" else FALLBACK_MODELS
+    req_timeout = 5 if kind == "live" else 25
+    models_to_try = [model_name] if model_name in FALLBACK_MODELS else []
+    for m in FALLBACK_MODELS:
+        if m not in models_to_try:
+            models_to_try.append(m)
 
     last_err = None
     for model in models_to_try:
@@ -471,28 +490,26 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
             try:
                 resp = requests.post(url, json=payload, timeout=req_timeout)
                 if resp.status_code == 200:
-                    print(f"Gemini OK: model={model}, key=...{key[-6:]}")
+                    print(f"[Gemini OK] model={model}, key=...{key[-6:]}")
                     return resp.json()
-                elif resp.status_code in (429, 503, 500, 502, 504):
-                    print(f"Gemini {resp.status_code} on {model}/...{key[-6:]}, rotating...")
+                elif resp.status_code in (404, 429, 500, 502, 503, 504):
+                    print(f"[Gemini {resp.status_code}] on {model}/...{key[-6:]}, rotating...")
                     last_err = f"{resp.status_code} on {model}"
                     continue
                 else:
                     raise Exception(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
             except requests.exceptions.RequestException as e:
-                print(f"Network error {model}/...{key[-6:]}: {type(e).__name__}")
+                print(f"[Gemini Network error] {model}/...{key[-6:]}: {type(e).__name__}")
                 last_err = f"Network error: {e}"
                 continue
 
     if kind != "live":
-        # All models and keys exhausted — wait 3s and try one more time with first available
-        print("All models+keys exhausted, waiting 3s for quota refresh...")
-        time.sleep(3)
-        for model in FALLBACK_MODELS:
+        time.sleep(2)
+        for model in models_to_try:
             for key in keys:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
                 try:
-                    resp = requests.post(url, json=payload, timeout=25)
+                    resp = requests.post(url, json=payload, timeout=20)
                     if resp.status_code == 200:
                         return resp.json()
                 except Exception:
@@ -500,32 +517,36 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
 
     raise Exception(last_err or "All Gemini models and keys exhausted")
 
-def _transcribe_dual_engine(cfg: dict, wav_data: bytes, model_name: str, kind: str = "live") -> list:
-    """Dual-Engine transcription: Groq Whisper Turbo first (ultra-fast), then Gemini rotation"""
+def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "live") -> list:
+    """Dual-Engine transcription: Groq Whisper Turbo first (ultra-fast), then Gemini multi-model fallback"""
     # 1. Groq Whisper (Blazing fast 100-200ms)
-    groq_plates = _call_groq_whisper(cfg, wav_data)
-    if groq_plates:
-        return groq_plates
+    try:
+        groq_plates = _call_groq_whisper(cfg, audio_data)
+        if groq_plates:
+            return groq_plates
+    except Exception as ge:
+        print(f"[Dual-Engine] Groq error: {ge}")
 
     # 2. Gemini Multi-Model Fallback
-    b64_wav = base64.b64encode(wav_data).decode("utf-8")
+    mime_type, _ = _detect_audio_info(audio_data)
+    b64_audio = base64.b64encode(audio_data).decode("utf-8")
     prompt = (
-        "أنت محرك ذكاء اصطناعي محترف متقدم جداً متخصص في التفريغ والتسميع الصوتي لأرقام لوحات السيارات السعودية من الصوت باللغة العربية.\n"
-        "المطلوب منك:\n"
-        "1. استمع بدقة عالية للتسجيل الصوتي واستخرج أرقام اللوحات والحروف المنطوقة.\n"
-        "2. اللوحة السعودية تتكون دائماً من 3 حروف عربية مفصولة بمسافات يليهم 1 إلى 4 أرقام (مثال: 'ر ك ع 7511' أو 'أ د هـ 9873').\n"
-        "3. تحويل أسماء الحروف العربية المنطوقة إلى الحرف المقابل مفصولاً بمسافات.\n"
+        "أنت محرك ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية من الصوت.\n"
+        "المطلوب منك بدقة:\n"
+        "1. استمع بدقة للتسجيل الصوتي واستخرج جميع اللوحات المذكورة.\n"
+        "2. كل لوحة سعودية تتكون من 3 حروف عربية مفصولة بمسافات يليهم 1 إلى 4 أرقام (مثال: 'ر ك ع 7511' أو 'أ د هـ 9873').\n"
+        "3. تحويل أسماء الحروف العربية المنطوقة (ألف، باء، جيم، دال، راء، عين، كاف...) إلى الحرف المقابل مفصولاً بمسافات.\n"
         "4. تحويل كافة الأرقام والكلمات العددية المنطوقة إلى أرقام (0-9).\n"
         "5. استخرج نوع السيارة والملاحظات إن وُجدت في الصوت.\n"
-        "6. الإخراج المطلوب: يجب إرجاع النتيجة بصيغة JSON مصفوفة فقط وبدون أي نصوص إضافية:\n"
+        "6. الإخراج المطلوب: يجب إرجاع النتيجة بصيغة مصفوفة JSON فقط بالشكل التالي:\n"
         '[{"plate": "ر ك ع 7511", "found": true, "vehicle_type": "تويوتا", "notes": ""}]\n'
-        "إذا كان الصوت غير واضح أو لا يوجد به رقم لوحة، أرجع مصفوفة فارغة: []"
+        "إذا سمعت أكثر من لوحة في التسجيل، أرجعها جميعاً في المصفوفة."
     )
     payload = {
         "contents": [{
             "parts": [
                 {"text": prompt},
-                {"inline_data": {"mime_type": "audio/wav", "data": b64_wav}}
+                {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
             ]
         }],
         "generationConfig": {
@@ -533,20 +554,25 @@ def _transcribe_dual_engine(cfg: dict, wav_data: bytes, model_name: str, kind: s
             "temperature": 0.0
         }
     }
-    res_json = _call_gemini_with_rotation(cfg, payload, model_name, kind=kind)
-    raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
-    clean_text = raw_text.strip()
-    if clean_text.startswith("```json"):
-        clean_text = clean_text[7:]
-    elif clean_text.startswith("```"):
-        clean_text = clean_text[3:]
-    if clean_text.endswith("```"):
-        clean_text = clean_text[:-3]
-    clean_text = clean_text.strip()
-    plates = json.loads(clean_text)
-    if isinstance(plates, dict):
-        plates = [plates]
-    return plates
+    try:
+        res_json = _call_gemini_with_rotation(cfg, payload, model_name, kind=kind)
+        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
+        clean_text = raw_text.strip()
+        if clean_text.startswith("```json"):
+            clean_text = clean_text[7:]
+        elif clean_text.startswith("```"):
+            clean_text = clean_text[3:]
+        if clean_text.endswith("```"):
+            clean_text = clean_text[:-3]
+        clean_text = clean_text.strip()
+        plates = json.loads(clean_text)
+        if isinstance(plates, dict):
+            plates = [plates]
+        if isinstance(plates, list) and plates:
+            return plates
+    except Exception as gem_err:
+        print(f"[Gemini Transcribe Error] {gem_err}")
+    return []
 
 
 

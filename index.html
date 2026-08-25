@@ -2322,9 +2322,7 @@ tbody tr:hover {
       <span id="checkLiveWsTxt" style="font-size:.76rem">غير متصل</span>
     </div>
     <div id="checkLiveTranscript" class="glog" style="height:auto;min-height:52px;margin-bottom:.85rem;max-height:100px"></div>
-    <button type="button" class="check-run-btn" id="checkLiveToggleBtn" onclick="checkLiveToggleMic()">&#x1F399; ابدأ الاستماع</button>
-    <button type="button" class="tb-btn outline" style="margin-right:.5rem" onclick="toggleCheckDebugPanel()">🛠️ لوحة التطوير والتنقيح (Debug)</button>
-    <a id="checkDebugWavBtn" href="/api/check-live/debug-wav" target="_blank" class="tb-btn outline" style="margin-right:.5rem;text-decoration:none;display:inline-flex;align-items:center;gap:.3rem" title="تحميل واستماع لآخر صوت استقبله الخادم">&#x1F4E5; استمع لآخر صوت (WAV)</a>
+    <button type="button" class="check-run-btn" id="checkLiveToggleBtn" onclick="checkLiveToggleMic()" style="background:#334155;color:#94a3b8;border:1px dashed #64748b;cursor:pointer">⏳ في انتظار اكتمال تحميل الموديلات</button>
 
     <!-- 🛠️ DEVELOPMENT REAL-TIME DEBUG PANEL (Requirements #1 & #12) -->
     <div id="checkDebugPanel" style="margin-top:1rem;padding:.85rem;background:#1e1e2d;border:1px solid #3b3b54;border-radius:8px;font-family:var(--mono);font-size:.78rem;color:#e1e1e6;display:block">
@@ -5222,123 +5220,9 @@ async function checkLiveRefUploadCurrentFile(){
   }
 }
 async function checkLiveToggleMic(){
-  if(checkLiveMicOn){
-    checkLiveStopMicOnly();
-    return;
-  }
-  showCheckStatus('proc','\u062C\u0627\u0631\u064A \u0627\u0644\u0627\u062A\u0635\u0627\u0644 \u2026',true);
-  checkLiveListeningIntent=true;
-  const ok=await checkLiveEnsureSocket();
-  if(!ok){
-    checkLiveListeningIntent=false;
-    showCheckStatus('err','\u0644\u0645 \u064A\u062A\u0645 \u0627\u0644\u0627\u062A\u0635\u0627\u0644');
-    return;
-  }
-  if(!checkLargeFile){
-    showCheckStatus('warn','\u0627\u0631\u0641\u0639 \u0645\u0644\u0641 Excel \u0644\u0644\u0645\u0637\u0627\u0628\u0642\u0629');
-  }
-  try{
-    const audioConstraints = {
-      audio: {
-        // Capture raw mono audio; browser suppression can erase quiet speech.
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        channelCount: {ideal: 1},
-        sampleRate: {ideal: 16000}
-      }
-    };
-    const stream=await navigator.mediaDevices.getUserMedia(audioConstraints);
-    checkLiveMediaStream=stream;
-    const ctx=new (window.AudioContext||window.webkitAudioContext)();
-    if(ctx.state==='suspended'){
-      await ctx.resume();
-    }
-    checkLiveAudioCtx=ctx;
-
-    // Update Debug Specs (Requirements #1 & #12)
-    const mPerm=document.getElementById('dbgMicPerm');
-    if(mPerm) mPerm.textContent='نشط ('+ctx.sampleRate+'Hz → 16kHz PCM16)';
-    const wsDbg=document.getElementById('dbgWsState');
-    if(wsDbg && checkLiveWs) wsDbg.textContent=checkLiveWs.readyState===1?'متصل ومستعد (جاهز)':'جاري الاتصال';
-
-    const src=ctx.createMediaStreamSource(stream);
-    const bufferSize=4096;
-    const node=ctx.createScriptProcessor(bufferSize,1,1);
-    checkLiveScriptNode=node;
-    node.onaudioprocess=function(e){
-      if(!checkLiveMicOn || !checkLiveWs || checkLiveWs.readyState!==1) return;
-      const input=e.inputBuffer.getChannelData(0);
-      let sum=0, peak=0;
-      for(let i=0;i<input.length;i++){
-        const v=Math.abs(input[i]);
-        sum += v*v;
-        if(v>peak) peak=v;
-      }
-      const rms=Math.sqrt(sum/input.length);
-      const down=checkLiveNormalizeForTransport(checkLiveDownsample(input,ctx.sampleRate,16000));
-      const pcm=checkLiveFloatTo16(down);
-      const u8=new Uint8Array(pcm.buffer);
-      const b64=checkLiveUint8ToB64(u8);
-
-      // Real-Time Debug Panel UI Updates (Requirements #1 & #12)
-      const rmsEl=document.getElementById('dbgRmsVal');
-      if(rmsEl) rmsEl.textContent=rms.toFixed(4);
-      const peakEl=document.getElementById('dbgPeakVal');
-      if(peakEl) peakEl.textContent=peak.toFixed(4);
-      const barEl=document.getElementById('dbgRmsBar');
-      if(barEl) barEl.style.width=Math.min(100, Math.round(rms*2500))+'%';
-      const badgeEl=document.getElementById('dbgVadBadge');
-
-      try{ checkLiveWs.send(JSON.stringify({type:'audio',data:b64})); }catch(err){}
-
-      if(rms > CHECK_LIVE_VOICE_RMS_THRESHOLD){
-        checkLiveLastVoiceAt=Date.now();
-        if(!checkLiveTurnStartAt) checkLiveTurnStartAt=Date.now();
-        if(badgeEl){
-          badgeEl.textContent='VAD: SPEECH 🎙️';
-          badgeEl.style.background='#10b981';
-        }
-        if(checkLiveSilenceTimer){
-          clearTimeout(checkLiveSilenceTimer);
-          checkLiveSilenceTimer=null;
-        }
-        // Continuous speech safeguard: 12 seconds max per turn
-        if(Date.now()-checkLiveTurnStartAt >= CHECK_LIVE_MAX_TURN_MS){
-            try{ checkLiveWs.send(JSON.stringify({type:'end_of_turn'})); }catch(_){}
-            checkLiveTurnStartAt=0;
-        }
-      }else{
-        if(badgeEl && !checkLiveSilenceTimer){
-          badgeEl.textContent='VAD: SILENCE 💤';
-          badgeEl.style.background='#374151';
-        }
-        if(!checkLiveSilenceTimer){
-          checkLiveSilenceTimer=setTimeout(function(){
-            checkLiveSilenceTimer=null;
-            if(!checkLiveMicOn || !checkLiveWs || checkLiveWs.readyState!==1) return;
-            if(Date.now()-checkLiveLastVoiceAt >= CHECK_LIVE_SILENCE_MS){
-              try{ checkLiveWs.send(JSON.stringify({type:'end_of_turn'})); }catch(_){}
-              checkLiveTurnStartAt=0;
-            }
-          },CHECK_LIVE_SILENCE_MS);
-        }
-      }
-    };
-    const mute=ctx.createGain();
-    mute.gain.value=0;
-    src.connect(node);
-    node.connect(mute);
-    mute.connect(ctx.destination);
-    checkLiveMicOn=true;
-    checkLiveListeningIntent=true;
-    checkLiveLastVoiceAt=Date.now();
-    document.getElementById('checkLiveToggleBtn').textContent='\u23F9 \u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u0627\u0633\u062A\u0645\u0627\u0639';
-    showCheckStatus('ok','\u062C\u0627\u0631\u064A \u0627\u0644\u0627\u0633\u062A\u0645\u0627\u0639 \u2026');
-  }catch(e){
-    showCheckStatus('err','\u0627\u0644\u0645\u064A\u0643\u0631\u0648\u0641\u0648\u0646: '+e.message);
-    checkLiveMicOn=false;
-  }
+  alert('⏳ تنبيه: قسم التشيك المباشر قيد اكتمال تدريب وتجهيز الموديلات — سيعمل هذا القسم تلقائياً في حين اكتمال الموديلات.');
+  showCheckStatus('warn', '⏳ هذا القسم سيعمل تلقائياً في حين اكتمال الموديلات.');
+  return;
 }
 function normPlate(s){
   s=String(s||'').trim();
