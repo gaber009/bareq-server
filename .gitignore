@@ -1,0 +1,38 @@
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.env
+
+# Logs & debug
+*.log
+server.stderr.log
+server.stdout.log
+debug_last_utterance.wav
+
+# Audio & binary models
+*.wav
+*.mp3
+*.bin
+DebugProbesKt.bin
+
+# Local ASR engine (heavy, not needed on Railway)
+asr_engine.py
+plate_decoder.py
+asr_engine/
+models/
+.whisper/
+
+# APK files
+*.apk
+*.idsig
+
+# IDE
+.vscode/
+.idea/
+
+# Sensitive data — set via environment variables on Railway
+config.json.local.bak
+users.json

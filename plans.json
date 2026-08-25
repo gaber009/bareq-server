@@ -1,0 +1,61 @@
+[
+  {
+    "id": 1,
+    "name": "أساسية",
+    "name_en": "Basic",
+    "price": 99,
+    "currency": "ريال",
+    "duration_days": 30,
+    "rows_limit": 5000,
+    "description": "مناسبة للأفراد والمندوبين الجدد",
+    "features": [
+      "5,000 صف شهرياً",
+      "تسجيل صوتي",
+      "تصدير Excel",
+      "دعم فني واتساب"
+    ],
+    "color": "#22c55e",
+    "is_active": true,
+    "created_at": "2026-08-25 11:00:00"
+  },
+  {
+    "id": 2,
+    "name": "احترافية",
+    "name_en": "Professional",
+    "price": 249,
+    "currency": "ريال",
+    "duration_days": 90,
+    "rows_limit": 50000,
+    "description": "للمندوبين المحترفين والفرق الصغيرة",
+    "features": [
+      "50,000 صف / 3 أشهر",
+      "تسجيل صوتي متقدم",
+      "تصدير Excel",
+      "جلسة تشيك",
+      "دعم أولوية"
+    ],
+    "color": "#3b82f6",
+    "is_active": true,
+    "created_at": "2026-08-25 11:00:00"
+  },
+  {
+    "id": 3,
+    "name": "مؤسسية",
+    "name_en": "Enterprise",
+    "price": 799,
+    "currency": "ريال",
+    "duration_days": 365,
+    "rows_limit": 9999999,
+    "description": "للشركات والمؤسسات الكبيرة",
+    "features": [
+      "صفوف غير محدودة",
+      "جميع الميزات",
+      "تقارير متقدمة",
+      "مدير حساب مخصص",
+      "دعم 24/7"
+    ],
+    "color": "#a855f7",
+    "is_active": true,
+    "created_at": "2026-08-25 11:00:00"
+  }
+]

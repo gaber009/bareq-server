@@ -1,0 +1,15 @@
+﻿{
+  "gemini_api_key": "",
+  "groq_api_key": "",
+  "groq_keys": [],
+  "gmaps_api_key": "",
+  "ors_api_key": "",
+  "gemini_model": "gemini-1.5-flash",
+  "app_name": "برق — نظام لوحات السيارات",
+  "admin_username": "admin",
+  "admin_password": "changeme123",
+  "ors_keys": [],
+  "ors_base_url": "https://api.openrouteservice.org",
+  "gemini_rest_keys": [],
+  "gemini_live_keys": []
+}

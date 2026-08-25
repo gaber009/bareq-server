@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  bareq:
+    build: .
+    container_name: bareq_server
+    restart: always
+    ports:
+      - "8500:8500"
+    environment:
+      - PORT=8500
+      - HOST=0.0.0.0
+    volumes:
+      - ./config.json:/app/config.json
+      - ./users.json:/app/users.json
+      - ./static:/app/static
