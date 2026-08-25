@@ -1429,13 +1429,29 @@ async def register(req: Request):
 
 @app.get("/auth/me")
 async def auth_me(req: Request):
-    token = req.headers.get("Authorization", "")
+    auth_header = req.headers.get("Authorization", "").strip()
+    token = auth_header.replace("Bearer ", "").strip()
     cfg = load_config()
     users = load_users()
     
+    if not token:
+        raise HTTPException(status_code=401, detail="يرجى تسجيل الدخول أولاً")
+        
+    # Check if admin token
+    if "bareq_admin_token" in token:
+        return {
+            "status": "ok",
+            "is_admin": True,
+            "username": cfg.get("admin_username", "admin"),
+            "display_name": "مدير النظام",
+            "plan_name": "باقة المدير (غير محدود)",
+            "rows_limit": 9999999,
+            "subscription_end": "غير محدود"
+        }
+        
     # Try finding user by token
     for u in users:
-        if token and token.endswith(str(u["id"])):
+        if token.endswith(str(u["id"])) or f"bareq_token_{u['id']}" in token:
             return {
                 "status": "ok",
                 "is_admin": u.get("is_admin", False),
@@ -1448,15 +1464,7 @@ async def auth_me(req: Request):
                 "is_active": u.get("is_active", True)
             }
             
-    return {
-        "status": "ok",
-        "is_admin": True,
-        "username": cfg.get("admin_username", "admin"),
-        "display_name": "مدير النظام",
-        "plan_name": "باقة المدير (غير محدود)",
-        "rows_limit": 9999999,
-        "subscription_end": "غير محدود"
-    }
+    raise HTTPException(status_code=401, detail="انتهت صلاحية الجلسة، يرجى تسجيل الدخول")
 
 @app.get("/api/public-plans")
 async def get_public_plans():
