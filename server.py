@@ -1787,7 +1787,10 @@ async def get_plans_stats():
 
 if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", 8500))
+    try:
+        port = int(os.environ.get("PORT", 8500))
+    except (ValueError, TypeError):
+        port = 8500
     print("==================================================")
     print("   Bareq System Server - Running Successfully")
     print(f"   URL: http://{host}:{port} (Local: http://127.0.0.1:{port})")
