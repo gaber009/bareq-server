@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -18,7 +18,7 @@ debug_last_utterance.wav
 *.bin
 DebugProbesKt.bin
 
-# Local ASR engine (heavy, not needed on Railway)
+# Local ASR engine
 asr_engine.py
 plate_decoder.py
 asr_engine/
@@ -33,6 +33,7 @@ models/
 .vscode/
 .idea/
 
-# Sensitive data — set via environment variables on Railway
-config.json.local.bak
+# Local sensitive configuration & users
+config.json
 users.json
+config.json.local.bak

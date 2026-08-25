@@ -101,8 +101,21 @@ def load_config():
                 default_config.update(cfg)
         except Exception:
             pass
-    else:
-        save_config(default_config)
+
+    # Environment variables override (for Railway / Cloud deployments)
+    if os.environ.get("GEMINI_API_KEY"):
+        default_config["gemini_api_key"] = os.environ["GEMINI_API_KEY"]
+    if os.environ.get("GROQ_API_KEY"):
+        default_config["groq_api_key"] = os.environ["GROQ_API_KEY"]
+        if not default_config.get("groq_keys"):
+            default_config["groq_keys"] = [os.environ["GROQ_API_KEY"]]
+    if os.environ.get("GMAPS_API_KEY"):
+        default_config["gmaps_api_key"] = os.environ["GMAPS_API_KEY"]
+    if os.environ.get("ADMIN_PASSWORD"):
+        default_config["admin_password"] = os.environ["ADMIN_PASSWORD"]
+    if os.environ.get("ADMIN_USERNAME"):
+        default_config["admin_username"] = os.environ["ADMIN_USERNAME"]
+
     return default_config
 
 def save_config(cfg):
