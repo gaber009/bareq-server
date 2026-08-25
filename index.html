@@ -1811,36 +1811,95 @@ tbody tr:hover {
 <body>
 
 <div id="authLock" class="auth-lock">
-  <div class="auth-card">
-    <div style="display:flex;justify-content:center;margin-bottom:1rem">
-      <img src="/static/logo.jpg" alt="برق" class="bareq-logo-img" style="width:75px;height:75px;border-radius:18px" />
+  <div class="auth-card" style="max-width:440px">
+    <div style="display:flex;justify-content:center;margin-bottom:.8rem">
+      <img src="/static/logo.jpg" alt="برق" class="bareq-logo-img" style="width:70px;height:70px;border-radius:18px;box-shadow:0 0 20px rgba(0,229,255,.3)" />
     </div>
     <div style="font-size:1.6rem;font-weight:900;background:linear-gradient(90deg,#fff,#00E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:.2rem">بـَـرْق</div>
-    <div style="font-size:.78rem;color:#8aa4c4;font-weight:700;margin-bottom:1.4rem">حصل سياره اسرع &bull; تسجيل الدخول للنظام</div>
+    <div style="font-size:.78rem;color:#8aa4c4;font-weight:700;margin-bottom:1.1rem">حصل سياره اسرع &bull; نظام فحص واستخراج اللوحات الذكي</div>
     
-    <div style="text-align:right;margin-bottom:.8rem">
-      <label class="lbl">اسم المستخدم</label>
-      <input type="text" id="authUsername" placeholder="admin" value="admin" style="direction:ltr;text-align:right" />
+    <!-- AUTH TABS: دخول / تسجيل جديد -->
+    <div style="display:flex;gap:.4rem;background:var(--s2);padding:4px;border-radius:10px;margin-bottom:1.1rem;border:1px solid var(--brd2)">
+      <button type="button" id="tabAuthLogin" class="tb-btn sm" onclick="authSwitchMode('login')" style="flex:1;background:var(--teal);color:#04151f;font-weight:800;border:none;border-radius:7px;transition:all .2s">🔑 تسجيل الدخول</button>
+      <button type="button" id="tabAuthRegister" class="tb-btn sm" onclick="authSwitchMode('register')" style="flex:1;background:transparent;color:var(--dim2);font-weight:700;border:none;border-radius:7px;transition:all .2s">✨ حساب مندوب جديد</button>
     </div>
-    
-    <div style="text-align:right;margin-bottom:.8rem">
-      <label class="lbl">كلمة المرور</label>
-      <div class="pw-row" style="margin-top:.2rem">
-        <input type="password" id="authPassword" placeholder="••••••" value="123" style="direction:ltr;text-align:right" />
-        <button type="button" class="pw-toggle" onclick="togglePw('authPassword',this)" title="إظهار/إخفاء">👁</button>
+
+    <!-- LOGIN FORM -->
+    <div id="authLoginForm">
+      <div style="text-align:right;margin-bottom:.75rem">
+        <label class="lbl">اسم المستخدم أو البريد الإلكتروني</label>
+        <input type="text" id="authUsername" placeholder="admin أو بريدك" value="admin" style="direction:ltr;text-align:right" />
+      </div>
+      
+      <div style="text-align:right;margin-bottom:.75rem">
+        <label class="lbl">كلمة المرور</label>
+        <div class="pw-row" style="margin-top:.2rem">
+          <input type="password" id="authPassword" placeholder="••••••" value="123" style="direction:ltr;text-align:right" />
+          <button type="button" class="pw-toggle" onclick="togglePw('authPassword',this)" title="إظهار/إخفاء">👁</button>
+        </div>
+      </div>
+      
+      <div class="auth-actions" style="margin-top:1.1rem">
+        <button class="auth-btn login" onclick="authLogin()" style="width:100%">⚡ دخول للنظام</button>
+      </div>
+      <div style="margin-top:.6rem;font-size:.72rem;color:var(--dim2);font-family:var(--mono)">للدخول كمدير: admin / 123</div>
+    </div>
+
+    <!-- REGISTER FORM (TRIAL) -->
+    <div id="authRegisterForm" style="display:none">
+      <div style="background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:.5rem .7rem;font-size:.78rem;color:#86efac;margin-bottom:.85rem;text-align:right">
+        🎁 <strong>فترة تجريبية مجانية:</strong> سجّل حسابك الآن واحصل على <strong>7 أيام مجاناً</strong> لتجربة استخراج وفحص اللوحات!
+      </div>
+      
+      <div style="text-align:right;margin-bottom:.65rem">
+        <label class="lbl">اسم المندوب / الاسم الكامل</label>
+        <input type="text" id="regDisplayName" placeholder="مثال: أحمد محمد" />
+      </div>
+      
+      <div style="text-align:right;margin-bottom:.65rem">
+        <label class="lbl">اسم المستخدم أو البريد الإلكتروني</label>
+        <input type="text" id="regUsername" placeholder="ahmed@gmail.com" style="direction:ltr;text-align:right" />
+      </div>
+
+      <div style="text-align:right;margin-bottom:.65rem">
+        <label class="lbl">رقم الهاتف / الواتساب</label>
+        <input type="tel" id="regPhone" placeholder="05xxxxxxxx" style="direction:ltr;text-align:right" />
+      </div>
+      
+      <div style="text-align:right;margin-bottom:.75rem">
+        <label class="lbl">كلمة المرور الجديدة</label>
+        <div class="pw-row" style="margin-top:.2rem">
+          <input type="password" id="regPassword" placeholder="••••••" style="direction:ltr;text-align:right" />
+          <button type="button" class="pw-toggle" onclick="togglePw('regPassword',this)" title="إظهار/إخفاء">👁</button>
+        </div>
+      </div>
+      
+      <div class="auth-actions" style="margin-top:1.1rem">
+        <button class="auth-btn login" onclick="authRegister()" style="width:100%;background:linear-gradient(135deg,#22c55e,#16a34a);border-color:#22c55e">🚀 بدء التجربة المجانية (7 أيام)</button>
       </div>
     </div>
     
     <input type="hidden" id="authDeviceId" />
-    
-    <div class="auth-actions" style="margin-top:1.2rem">
-      <button class="auth-btn login" onclick="authLogin()" style="width:100%">⚡ دخول للنظام</button>
-    </div>
-    
     <div id="authMsg" style="margin-top:.8rem;font-family:var(--ar);font-size:.82rem;font-weight:700;min-height:1.4rem"></div>
-    <div style="margin-top:.6rem;font-size:.72rem;color:var(--dim2);font-family:var(--mono)">بيانات الدخول الافتراضية: admin / 123</div>
   </div>
 </div>
+
+<!-- DELEGATE PLANS MODAL (لترقية الباقة وطلب الاشتراك) -->
+<div class="modal-bg" id="delegatePlansModal">
+  <div class="modal" style="max-width:760px;direction:rtl">
+    <button class="modal-close" onclick="closeDelegatePlansModal()">&#x2715;</button>
+    <div style="text-align:center;margin-bottom:1.2rem">
+      <h2 style="margin:0 0 .3rem;font-size:1.4rem;color:var(--teal)">💎 باقات الاشتراك للمندوبين</h2>
+      <p style="margin:0;font-size:.82rem;color:var(--dim2)">اختر الباقة المناسبة لاحتياجاتك واطلب تفعيلها فوراً</p>
+    </div>
+    
+    <div id="publicPlansGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin-bottom:1.2rem"></div>
+    
+    <div style="background:var(--s2);border:1px solid var(--brd2);border-radius:10px;padding:.85rem 1rem;font-size:.8rem;color:var(--dim2);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.6rem">
+      <span>💬 للاستفسارات والاشتراكات المخصصة أو الدفع المباشر:</span>
+      <a id="publicPlansWhatsappBtn" href="https://wa.me/" target="_blank" rel="noopener" class="tb-btn sm" style="background:#25D366;color:#fff;font-weight:700;text-decoration:none">📱 تواصل عبر واتساب</a>
+    </div>
+  </div>
 </div>
 
 <div class="wrap">
@@ -1893,6 +1952,7 @@ tbody tr:hover {
     </div>
   </div>
   <div class="header-actions">
+    <button type="button" class="tb-btn sm" id="btnUpgradeTop" onclick="openDelegatePlansModal()" style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border:none;font-weight:700;box-shadow:0 0 10px rgba(245,158,11,.3);border-radius:8px">⭐ باقات الاشتراك</button>
     <div class="user-status-pill" id="userStatusPill" onclick="openSettings()" title="حساب المستخدم">
       <span class="user-status-dot"></span>
       <span class="user-display-name" id="userDisplayName">مدير النظام</span>
@@ -1902,6 +1962,16 @@ tbody tr:hover {
     <button class="icon-btn" onclick="authFullLogout()" title="تسجيل الخروج" style="color:var(--red)">🚪</button>
   </div>
 </header>
+
+<!-- DELEGATE PLAN STATUS BANNER -->
+<div id="delegatePlanBanner" style="display:none;background:linear-gradient(90deg,rgba(14,165,233,.12),rgba(34,197,94,.12));border:1px solid rgba(34,197,94,.25);border-radius:10px;margin:0 1rem .85rem;padding:.65rem 1rem;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.6rem;direction:rtl">
+  <div style="display:flex;align-items:center;gap:.85rem;flex-wrap:wrap">
+    <span id="dpbPlanBadge" style="background:#22c55e;color:#04151f;padding:.2rem .65rem;border-radius:20px;font-size:.78rem;font-weight:800">📦 باقة: تجريبية</span>
+    <span id="dpbDaysRemaining" style="font-size:.8rem;color:var(--text);font-weight:600">⏳ متبقي: 7 أيام</span>
+    <span id="dpbRowsLimit" style="font-size:.78rem;color:var(--dim2)">📊 الرصيد: 500 صف</span>
+  </div>
+  <button type="button" class="tb-btn sm primary" onclick="openDelegatePlansModal()" style="padding:.3rem .9rem;font-size:.78rem">💎 ترقية الباقة / الاشتراك</button>
+</div>
 
 <!-- TOP NAV: التسجيل | الفرز | التشيك -->
 <div class="top-nav">
@@ -5325,6 +5395,7 @@ function applyAdminNavVisibility(){
 }
 function openInitialAppPage(){
   try{
+    if(typeof updateDelegatePlanUI==='function') updateDelegatePlanUI();
     if(typeof switchPage!=='function') return;
     if(localStorage.getItem('auth_is_admin')==='1') switchPage('admin');
     else switchPage('field');
@@ -5541,6 +5612,172 @@ function openInitialAppPage(){
     return res;
   };
 
+  window.authSwitchMode = function(mode){
+    const isReg = mode === 'register';
+    const lForm = document.getElementById('authLoginForm');
+    const rForm = document.getElementById('authRegisterForm');
+    if(lForm) lForm.style.display = isReg ? 'none' : '';
+    if(rForm) rForm.style.display = isReg ? '' : 'none';
+    const tLog = document.getElementById('tabAuthLogin');
+    const tReg = document.getElementById('tabAuthRegister');
+    if(tLog && tReg){
+      tLog.style.background = isReg ? 'transparent' : 'var(--teal)';
+      tLog.style.color = isReg ? 'var(--dim2)' : '#04151f';
+      tReg.style.background = isReg ? '#22c55e' : 'transparent';
+      tReg.style.color = isReg ? '#04151f' : 'var(--dim2)';
+    }
+    const msg = document.getElementById('authMsg');
+    if(msg) msg.textContent = '';
+  };
+
+  window.authRegister = async function(){
+    const name = (document.getElementById('regDisplayName')?.value || '').trim();
+    const u = (document.getElementById('regUsername')?.value || '').trim();
+    const phone = (document.getElementById('regPhone')?.value || '').trim();
+    const p = (document.getElementById('regPassword')?.value || '');
+    const msg = document.getElementById('authMsg');
+    
+    if(!u || !p){
+      if(msg){ msg.style.color = 'var(--red)'; msg.textContent = 'يرجى إدخال اسم المستخدم/البريد وكلمة المرور'; }
+      return;
+    }
+    if(p.length < 4){
+      if(msg){ msg.style.color = 'var(--red)'; msg.textContent = 'كلمة المرور يجب أن تكون 4 خانات على الأقل'; }
+      return;
+    }
+    
+    if(msg){ msg.style.color = 'var(--teal)'; msg.textContent = '⏳ جاري إنشاء الحساب وتفعيل التجربة المجانية…'; }
+    try{
+      const r = await fetch('/auth/register', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: u, password: p, display_name: name, phone: phone})
+      });
+      const j = await r.json().catch(()=>({}));
+      if(!r.ok){
+        if(msg){ msg.style.color = 'var(--red)'; msg.textContent = '❌ ' + (j.detail || 'فشل التسجيل'); }
+        return;
+      }
+      setSession(true);
+      localStorage.setItem('auth_is_admin', '0');
+      localStorage.setItem('auth_user_name', j.display_name || j.username || '');
+      localStorage.setItem('auth_plan_name', j.plan_name || 'فترة تجريبية مجانية');
+      localStorage.setItem('auth_rows_limit', String(j.rows_limit || 500));
+      localStorage.setItem('auth_sub_end', j.subscription_end || '');
+      localStorage.setItem('auth_is_trial', '1');
+      
+      if(typeof applyAdminNavVisibility === 'function') applyAdminNavVisibility();
+      if(typeof updateDelegatePlanUI === 'function') updateDelegatePlanUI();
+      emitAuthStateChanged(true);
+      showLock(false);
+      if(typeof openInitialAppPage === 'function') openInitialAppPage();
+      alert('🎉 ' + (j.message || 'أهلاً بك! تم تفعيل حسابك والتجربة المجانية.'));
+    }catch(e){
+      if(msg){ msg.style.color = 'var(--red)'; msg.textContent = 'تعذر الاتصال بالخادم — تحقق من الشبكة.'; }
+    }
+  };
+
+  window.updateDelegatePlanUI = function(){
+    const isAdm = localStorage.getItem('auth_is_admin') === '1';
+    const uName = localStorage.getItem('auth_user_name') || 'المستخدم';
+    const planName = localStorage.getItem('auth_plan_name') || 'فترة تجريبية مجانية';
+    const subEnd = localStorage.getItem('auth_sub_end') || '';
+    const rowsLim = localStorage.getItem('auth_rows_limit') || '500';
+    
+    const unEl = document.getElementById('userDisplayName');
+    if(unEl) unEl.textContent = isAdm ? 'مدير النظام' : uName;
+    
+    const banner = document.getElementById('delegatePlanBanner');
+    if(!banner) return;
+    if(isAdm){
+      banner.style.display = 'none';
+      return;
+    }
+    banner.style.display = 'flex';
+    
+    const pBadge = document.getElementById('dpbPlanBadge');
+    const dRem = document.getElementById('dpbDaysRemaining');
+    const rLim = document.getElementById('dpbRowsLimit');
+    
+    if(pBadge) pBadge.textContent = '📦 ' + planName;
+    if(rLim) rLim.textContent = '📊 الرصيد: ' + (parseInt(rowsLim)>=9000000 ? 'غير محدود' : Number(rowsLim).toLocaleString('ar') + ' صف');
+    
+    if(dRem){
+      if(!subEnd || subEnd === 'غير محدود' || subEnd.includes('يوم')){
+        dRem.textContent = '⏳ ' + (subEnd || 'نشط');
+      } else {
+        const d = new Date(subEnd);
+        if(!isNaN(d)){
+          const diff = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
+          if(diff < 0){
+            dRem.innerHTML = '<span style="color:#ef4444;font-weight:800">⚠ انتهت الفترة التجريبية — يرجى الاشتراك</span>';
+          } else {
+            dRem.textContent = '⏳ متبقي: ' + diff + ' أيام (حتى ' + subEnd + ')';
+          }
+        } else {
+          dRem.textContent = '⏳ ' + subEnd;
+        }
+      }
+    }
+  };
+
+  window.openDelegatePlansModal = async function(){
+    const modal = document.getElementById('delegatePlansModal');
+    if(!modal) return;
+    modal.classList.add('open');
+    const grid = document.getElementById('publicPlansGrid');
+    if(grid) grid.innerHTML = '<p style="color:var(--dim2);text-align:center;padding:1rem">⏳ جاري تحميل الباقات المتاحة…</p>';
+    
+    try{
+      const res = await fetch('/api/public-plans');
+      const plans = await res.json();
+      if(!Array.isArray(plans) || !plans.length){
+        if(grid) grid.innerHTML = '<p style="color:var(--dim2);text-align:center">لا توجد باقات متاحة حالياً.</p>';
+        return;
+      }
+      grid.innerHTML = plans.map(p => {
+        const feats = (p.features||[]).map(f=>`<li style="font-size:.76rem;color:var(--dim2);margin:.2rem 0">✔ ${f}</li>`).join('');
+        const rowsLabel = p.rows_limit >= 9000000 ? 'صفوف غير محدودة' : Number(p.rows_limit).toLocaleString('ar') + ' صف';
+        return `
+        <div style="background:var(--s1);border:2px solid ${p.color||'#22c55e'};border-radius:12px;padding:1.1rem;display:flex;flex-direction:column;justify-content:space-between">
+          <div>
+            <div style="font-size:1.15rem;font-weight:800;color:${p.color||'#22c55e'};margin-bottom:.3rem">${p.name}</div>
+            <div style="font-size:1.6rem;font-weight:900;color:var(--text);margin-bottom:.3rem">${p.price} <span style="font-size:.8rem;font-weight:400;color:var(--dim2)">${p.currency}</span></div>
+            <div style="font-size:.76rem;color:var(--dim2);margin-bottom:.6rem">⏱ ${p.duration_days} يوم &nbsp;|&nbsp; 📊 ${rowsLabel}</div>
+            <p style="font-size:.76rem;color:var(--dim2);margin-bottom:.6rem">${p.description||''}</p>
+            <ul style="padding-right:1rem;margin:0 0 1rem">${feats}</ul>
+          </div>
+          <button type="button" class="tb-btn primary" onclick="requestPublicPlan(${p.id}, '${p.name}')" style="width:100%;font-weight:800;background:${p.color||'#22c55e'};color:#04151f;border:none">💬 طلب هذه الباقة</button>
+        </div>`;
+      }).join('');
+    }catch(e){
+      if(grid) grid.innerHTML = '<p style="color:var(--red);text-align:center">فشل تحميل الباقات</p>';
+    }
+  };
+
+  window.closeDelegatePlansModal = function(){
+    const modal = document.getElementById('delegatePlansModal');
+    if(modal) modal.classList.remove('open');
+  };
+
+  window.requestPublicPlan = async function(planId, planName){
+    const uName = localStorage.getItem('auth_user_name') || 'مندوب';
+    try{
+      const res = await fetch('/api/request-plan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({plan_id: planId, plan_name: planName, user_name: uName})
+      });
+      const data = await res.json();
+      alert('✅ ' + (data.message || 'تم إرسال طلب الاشتراك بنجاح!'));
+      if(data.whatsapp_url){
+        window.open(data.whatsapp_url, '_blank');
+      }
+    }catch(e){
+      alert('تم استلام طلبك للباقة وسيتم التواصل معك لتفعيلها.');
+    }
+  };
+
   window.authLogin=async function(){
     const u=document.getElementById('authUsername').value.trim();
     const p=document.getElementById('authPassword').value;
@@ -5556,7 +5793,14 @@ function openInitialAppPage(){
       }
       setSession(true);
       localStorage.setItem('auth_is_admin', j.is_admin===true?'1':'0');
+      localStorage.setItem('auth_user_name', j.display_name || j.username || '');
+      localStorage.setItem('auth_plan_name', j.plan_name || 'فترة تجريبية مجانية');
+      localStorage.setItem('auth_rows_limit', String(j.rows_limit || 500));
+      localStorage.setItem('auth_sub_end', j.subscription_end || '');
+      localStorage.setItem('auth_is_trial', j.is_trial ? '1' : '0');
+      
       if(typeof applyAdminNavVisibility==='function') applyAdminNavVisibility();
+      if(typeof updateDelegatePlanUI==='function') updateDelegatePlanUI();
       startProactiveRefresh();
       startPresenceHeartbeat();
       emitAuthStateChanged(true);
@@ -5580,6 +5824,10 @@ function openInitialAppPage(){
     try{ const sm=document.getElementById('settingsModal'); if(sm) sm.classList.remove('open'); }catch(_){}
     await serverRevokeRefreshTokens();
     clearTokens();
+    localStorage.removeItem('auth_user_name');
+    localStorage.removeItem('auth_plan_name');
+    localStorage.removeItem('auth_rows_limit');
+    localStorage.removeItem('auth_sub_end');
     showLock(true);
     setMsg('تم تسجيل الخروج',true);
     if(typeof applyAdminNavVisibility==='function') applyAdminNavVisibility();

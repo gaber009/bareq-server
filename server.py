@@ -1320,6 +1320,7 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
 
 
 # --- AUTH ENDPOINTS ---
+# --- AUTH ENDPOINTS ---
 @app.post("/auth/login")
 async def login(req: Request):
     data = await req.json()
@@ -1328,32 +1329,151 @@ async def login(req: Request):
     u_in = data.get("username", "").strip()
     p_in = data.get("password", "").strip()
     
-    if u_in == cfg["admin_username"] and p_in == cfg["admin_password"]:
+    if u_in == cfg.get("admin_username", "admin") and p_in == cfg.get("admin_password", "123"):
         return {
             "status": "ok",
             "token": "bareq_admin_token_8899",
             "is_admin": True,
-            "username": u_in
+            "username": u_in,
+            "display_name": "مدير النظام",
+            "plan_name": "باقة المدير (غير محدود)",
+            "rows_limit": 9999999,
+            "subscription_end": "غير محدود",
+            "is_active": True,
+            "is_trial": False
         }
         
     for u in users:
-        if u["username"] == u_in and u.get("password") == p_in:
+        if (u.get("username") == u_in or u.get("email") == u_in) and u.get("password") == p_in:
+            if not u.get("is_active", True):
+                raise HTTPException(status_code=403, detail="هذا الحساب معطل، يرجى التواصل مع الإدارة")
             return {
                 "status": "ok",
                 "token": f"bareq_token_{u['id']}",
+                "user_id": u["id"],
                 "is_admin": u.get("is_admin", False),
-                "username": u["username"]
+                "username": u.get("username", u_in),
+                "display_name": u.get("display_name", u_in),
+                "email": u.get("email", ""),
+                "phone": u.get("phone", ""),
+                "plan_id": u.get("plan_id", 0),
+                "plan_name": u.get("plan_name", "فترة تجريبية مجانية"),
+                "rows_limit": u.get("rows_limit", 500),
+                "subscription_start": u.get("subscription_start", ""),
+                "subscription_end": u.get("subscription_end", ""),
+                "is_trial": u.get("is_trial", False),
+                "is_active": u.get("is_active", True)
             }
             
-    raise HTTPException(status_code=401, detail="اسم المستخدم أو كلمة المرور غير صحيحة")
+    raise HTTPException(status_code=401, detail="اسم المستخدم/البريد أو كلمة المرور غير صحيحة")
+
+@app.post("/auth/register")
+async def register(req: Request):
+    data = await req.json()
+    u_in = (data.get("username") or data.get("email") or "").strip()
+    email_in = data.get("email", "").strip()
+    p_in = data.get("password", "").strip()
+    name_in = data.get("display_name", "").strip() or u_in
+    phone_in = data.get("phone", "").strip()
+    
+    if not u_in or not p_in:
+        raise HTTPException(status_code=400, detail="يرجى إدخال اسم المستخدم/البريد وكلمة المرور")
+    if len(p_in) < 4:
+        raise HTTPException(status_code=400, detail="كلمة المرور يجب أن تكون 4 خانات على الأقل")
+        
+    users = load_users()
+    for u in users:
+        if u.get("username") == u_in or (email_in and u.get("email") == email_in):
+            raise HTTPException(status_code=400, detail="اسم المستخدم أو البريد مسجل مسبقاً، يرجى تسجيل الدخول")
+            
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    trial_days = 7
+    sub_end = (now + timedelta(days=trial_days)).strftime("%Y-%m-%d")
+    
+    new_id = max((u.get("id", 0) for u in users), default=0) + 1
+    new_user = {
+        "id": new_id,
+        "username": u_in,
+        "email": email_in or u_in,
+        "password": p_in,
+        "display_name": name_in,
+        "phone": phone_in,
+        "is_admin": False,
+        "is_active": True,
+        "is_trial": True,
+        "plan_id": 0,
+        "plan_name": "فترة تجريبية مجانية (7 أيام)",
+        "rows_limit": 500,
+        "subscription_start": now.strftime("%Y-%m-%d"),
+        "subscription_end": sub_end,
+        "created_at": now.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    users.append(new_user)
+    save_users(users)
+    
+    return {
+        "status": "ok",
+        "message": f"أهلاً بك يا {name_in}! تم تفعيل الفترة التجريبية المجانية لمدة 7 أيام.",
+        "token": f"bareq_token_{new_user['id']}",
+        "user_id": new_user["id"],
+        "is_admin": False,
+        "username": new_user["username"],
+        "display_name": new_user["display_name"],
+        "plan_name": new_user["plan_name"],
+        "rows_limit": new_user["rows_limit"],
+        "subscription_end": new_user["subscription_end"],
+        "is_trial": True,
+        "is_active": True
+    }
 
 @app.get("/auth/me")
-async def auth_me():
+async def auth_me(req: Request):
+    token = req.headers.get("Authorization", "")
     cfg = load_config()
+    users = load_users()
+    
+    # Try finding user by token
+    for u in users:
+        if token and token.endswith(str(u["id"])):
+            return {
+                "status": "ok",
+                "is_admin": u.get("is_admin", False),
+                "username": u.get("username", ""),
+                "display_name": u.get("display_name", ""),
+                "plan_name": u.get("plan_name", "فترة تجريبية مجانية"),
+                "rows_limit": u.get("rows_limit", 500),
+                "subscription_end": u.get("subscription_end", ""),
+                "is_trial": u.get("is_trial", False),
+                "is_active": u.get("is_active", True)
+            }
+            
     return {
         "status": "ok",
         "is_admin": True,
-        "username": cfg["admin_username"]
+        "username": cfg.get("admin_username", "admin"),
+        "display_name": "مدير النظام",
+        "plan_name": "باقة المدير (غير محدود)",
+        "rows_limit": 9999999,
+        "subscription_end": "غير محدود"
+    }
+
+@app.get("/api/public-plans")
+async def get_public_plans():
+    plans = load_plans()
+    return [p for p in plans if p.get("is_active", True)]
+
+@app.post("/api/request-plan")
+async def request_plan(req: Request):
+    data = await req.json()
+    plan_name = data.get("plan_name", "باقة")
+    user_name = data.get("user_name", "مندوب")
+    phone = data.get("phone", "")
+    msg = f"مرحباً، أنا المندوب {user_name} ({phone}) وأرغب في الاشتراك في {plan_name}"
+    return {
+        "status": "ok",
+        "message": f"تم استلام طلب اشتراكك في '{plan_name}' بنجاح! سيتم مراجعة الطلب وتفعيله.",
+        "whatsapp_url": f"https://api.whatsapp.com/send?text={msg}"
     }
 
 @app.post("/auth/presence")
