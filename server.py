@@ -207,29 +207,150 @@ async def serve_static(file_path: str):
     raise HTTPException(status_code=404, detail="الملف غير موجود")
 
 OM_FIELD_JS_CODE = """
-// OM Field JavaScript Helper for Bareq System
-console.log("OM Field JS Loaded Successfully");
+// OM Field Real Matching & GPS Engine for Bareq System v5.0
+console.log("OM Field JS Real Engine Loaded Successfully");
 
 let omLargeFile = null;
 let omSmallFile = null;
+let omLargeHeaders = [];
+let omSmallHeaders = [];
+let omMatchedRowsData = [];
+let omGpsSortedData = [];
 
-function omOnCheckFileChange(file, type) {
-    console.log("File selected:", type, file ? file.name : "none");
+function normPlate(s){
+  if(!s) return "";
+  s = String(s).trim().toLowerCase();
+  s = s.replace(/[\\s\\u200b\\u200c\\u200d\\ufeff\\-_]+/g, '');
+  s = s.replace(/[\\u0623\\u0625\\u0622\\u0671]/g, 'ا');
+  s = s.replace(/[\\u0649]/g, 'ي');
+  s = s.replace(/[\\u0629]/g, 'ه');
+  return s;
+}
+
+function omShowStatus(type, msg, spin){
+  const bar = document.getElementById('omFieldStatus');
+  const spinEl = document.getElementById('omFieldSpin');
+  const txtEl = document.getElementById('omFieldStatusTxt');
+  if(!bar || !txtEl) return;
+  bar.className = 'status ' + (type==='proc'?'proc':type==='ok'?'ok':'err');
+  if(spinEl) spinEl.style.display = spin ? 'block' : 'none';
+  txtEl.textContent = msg || '';
+}
+
+async function omOnCheckFileChange(file, type) {
     if (type === 'large') {
         omLargeFile = file;
         const el = document.getElementById('omLargeFname');
         const btn = document.getElementById('omRemoveLargeBtn');
-        if (el) el.textContent = file ? file.name : '';
-        if (btn) btn.style.display = file ? 'inline-block' : 'none';
+        if (el) el.textContent = file ? '📎 ' + file.name : '';
+        if (btn) btn.classList.toggle('show', !!file);
+        
+        if (file) {
+            omShowStatus('proc', '⏳ جاري فحص واستخراج أعمدة الملف الكبير...', true);
+            const fd = new FormData();
+            fd.append('large_file', file);
+            try {
+                const res = await fetch('/api/check-headers', {method: 'POST', body: fd});
+                const data = await res.json();
+                const headers = data.headers || data.cols || [];
+                omLargeHeaders = headers;
+                
+                // Populate export checklist
+                const expList = document.getElementById('omLargeExportList');
+                if (expList) {
+                    expList.innerHTML = headers.map(h => `
+                        <label style="display:flex;align-items:center;gap:.35rem;font-size:.76rem;cursor:pointer">
+                            <input type="checkbox" value="${h}" checked />
+                            <span>${h}</span>
+                        </label>
+                    `).join('');
+                }
+                
+                // Auto-detect plate column
+                let plateCol = data.detected || data.detected_col || '';
+                if(!plateCol && headers.length){
+                    plateCol = headers.find(h => typeof h === 'string' && (h.includes('لوح') || h.includes('لوحة') || h.toLowerCase().includes('plate'))) || headers[0];
+                }
+                const lColInp = document.getElementById('omLargeCol');
+                if (lColInp && plateCol) lColInp.value = plateCol;
+                const badge = document.getElementById('omLargeColBadge');
+                if (badge) {
+                    badge.style.display = 'inline-block';
+                    badge.className = 'detect-badge found';
+                    badge.textContent = '✔ ' + plateCol;
+                }
+                
+                // Auto-detect GPS column and reveal GPS section
+                const hasGps = headers.some(h => typeof h === 'string' && (h.toLowerCase().includes('gps') || h.includes('موقع') || h.includes('احداثيات') || h.includes('إحداثيات')));
+                const gpsSec = document.getElementById('omGpsMatchSection');
+                if (gpsSec) gpsSec.style.display = hasGps ? 'block' : 'none';
+                
+                omShowStatus('ok', `✅ تم تجهيز الملف الكبير (${headers.length} عمود، عمود اللوحة: ${plateCol})`, false);
+            } catch(e) {
+                omShowStatus('err', 'تعذر قراءة أعمدة الملف الكبير', false);
+            }
+        }
     } else if (type === 'small') {
         omSmallFile = file;
         const el = document.getElementById('omSmallFname');
         const btn = document.getElementById('omRemoveSmallBtn');
-        if (el) el.textContent = file ? file.name : '';
-        if (btn) btn.style.display = file ? 'inline-block' : 'none';
+        if (el) el.textContent = file ? '📎 ' + file.name : '';
+        if (btn) btn.classList.toggle('show', !!file);
+        
+        if (file) {
+            omShowStatus('proc', '⏳ جاري فحص واستخراج أعمدة ملف الإحالة...', true);
+            const fd = new FormData();
+            fd.append('file', file);
+            try {
+                const res = await fetch('/api/check-headers', {method: 'POST', body: fd});
+                const data = await res.json();
+                const headers = data.headers || data.cols || [];
+                omSmallHeaders = headers;
+                
+                // Populate Small Col Dropdown
+                const sel = document.getElementById('omSmallCol');
+                if (sel) {
+                    sel.innerHTML = '<option value="">اختر عموداً…</option>' + headers.map(h => `<option value="${h}">${h}</option>`).join('');
+                }
+                
+                // Auto detect plate column in small file
+                let plateCol = data.detected || data.detected_col || '';
+                if(!plateCol && headers.length){
+                    plateCol = headers.find(h => typeof h === 'string' && (h.includes('لوح') || h.includes('لوحة') || h.toLowerCase().includes('plate'))) || headers[0];
+                }
+                if (sel && plateCol) sel.value = plateCol;
+                const badge = document.getElementById('omSmallColBadge');
+                if (badge) {
+                    badge.className = 'detect-badge found';
+                    badge.textContent = '✔ تلقائي';
+                }
+                
+                // Populate export checklist
+                const expList = document.getElementById('omSmallExportList');
+                if (expList) {
+                    expList.innerHTML = headers.map(h => `
+                        <label style="display:flex;align-items:center;gap:.35rem;font-size:.76rem;cursor:pointer">
+                            <input type="checkbox" value="${h}" checked />
+                            <span>${h}</span>
+                        </label>
+                    `).join('');
+                }
+                
+                omShowStatus('ok', `✅ تم تجهيز ملف الإحالة (${headers.length} عمود، عمود اللوحة: ${plateCol})`, false);
+            } catch(e) {
+                omShowStatus('err', 'تعذر قراءة أعمدة ملف الإحالة', false);
+            }
+        }
     }
+    
+    omUpdateMatchBtnState();
+}
+
+function omUpdateMatchBtnState(){
     const matchBtn = document.getElementById('omMatchBtn');
-    if (matchBtn) matchBtn.disabled = !(omLargeFile && omSmallFile);
+    const txtPlates = (document.getElementById('omSmallPlatesText') ? document.getElementById('omSmallPlatesText').value : '').trim();
+    const hasSmall = !!omSmallFile || txtPlates.length > 0;
+    if (matchBtn) matchBtn.disabled = !(omLargeFile && hasSmall);
 }
 
 function omHandleDropCheck(event, type) {
@@ -240,42 +361,372 @@ function omHandleDropCheck(event, type) {
 }
 
 function omRemoveCheckFile(type) {
-    omOnCheckFileChange(null, type);
+    if (type === 'large') {
+        omLargeFile = null;
+        omLargeHeaders = [];
+        const el = document.getElementById('omLargeFname');
+        if (el) el.textContent = '';
+        const btn = document.getElementById('omRemoveLargeBtn');
+        if (btn) btn.classList.remove('show');
+        const inp = document.getElementById('omLargeFileIn');
+        if (inp) inp.value = '';
+        const badge = document.getElementById('omLargeColBadge');
+        if (badge) badge.style.display = 'none';
+        const expList = document.getElementById('omLargeExportList');
+        if (expList) expList.innerHTML = '';
+    } else if (type === 'small') {
+        omSmallFile = null;
+        omSmallHeaders = [];
+        const el = document.getElementById('omSmallFname');
+        if (el) el.textContent = '';
+        const btn = document.getElementById('omRemoveSmallBtn');
+        if (btn) btn.classList.remove('show');
+        const inp = document.getElementById('omSmallFileIn');
+        if (inp) inp.value = '';
+        const sel = document.getElementById('omSmallCol');
+        if (sel) sel.innerHTML = '<option value="">اختر عموداً…</option>';
+        const badge = document.getElementById('omSmallColBadge');
+        if (badge) {
+            badge.className = 'detect-badge pending';
+            badge.textContent = '—';
+        }
+    }
+    omUpdateMatchBtnState();
 }
 
-function omConfirmLargePw() { console.log("Confirm Large Pw"); }
-function omConfirmSmallPw() { console.log("Confirm Small Pw"); }
-function omResetCheckDetect() { console.log("Reset Check Detect"); }
-function omOnManualColInput(type) { console.log("Manual Col Input", type); }
-function omOnSmallTextInput() { console.log("Small Text Input"); }
-function omOnFarzMatchModeChange() { console.log("Farz Match Mode Change"); }
-
-function omRunMatch() {
-    console.log("Running Match...");
-    const box = document.getElementById('omResultBox');
-    if (box) box.style.display = 'block';
-    
-    const m = document.getElementById('omRMatched');
-    const p = document.getElementById('omRPlates');
-    const u = document.getElementById('omRUnmatched');
-    if (m) m.textContent = "12";
-    if (p) p.textContent = "12";
-    if (u) u.textContent = "0";
-    
-    alert("تم إجراء المطابقة بنجاح! جميع الصفوف مطابقة.");
+function omOnManualColInput(type) {
+    if (type === 'small') {
+        const val = document.getElementById('omSmallCol') ? document.getElementById('omSmallCol').value : '';
+        const badge = document.getElementById('omSmallColBadge');
+        if (badge) {
+            badge.className = val ? 'detect-badge found' : 'detect-badge pending';
+            badge.textContent = val ? '▾ مختار' : '—';
+        }
+    }
 }
 
-function omOpenExcelResult() { alert("جاري تحميل نتائج المطابقة بصيغة Excel..."); }
+function omOnSmallTextInput() {
+    omUpdateMatchBtnState();
+}
+
+function omOnFarzMatchModeChange() {
+    const isNew = document.getElementById('omFarzMatchModeNew') ? document.getElementById('omFarzMatchModeNew').checked : true;
+    const hint = document.getElementById('omFarzMatchModeHint');
+    if (hint) {
+        hint.textContent = isNew 
+            ? 'فرز جديد: يستبعد لوحات الإحالة الموجودة مسبقاً ويطابق الباقي على الداتا الكبيرة.' 
+            : 'فرز كلي: يطابق كافة لوحات الإحالة مباشرة مع قاعدة بيانات الملف الكبير.';
+    }
+}
+
+async function omRunMatch() {
+    if (!omLargeFile) {
+        alert('يرجى رفع الملف الكبير أولاً.');
+        return;
+    }
+    
+    const txtPlates = (document.getElementById('omSmallPlatesText') ? document.getElementById('omSmallPlatesText').value : '').trim();
+    if (!omSmallFile && !txtPlates) {
+        alert('يرجى رفع ملف الإحالة الصغير أو لصق اللوحات نصياً.');
+        return;
+    }
+    
+    omShowStatus('proc', '⏳ جاري قراءة البيانات وإجراء المطابقة الدقيقة بين الملفين...', true);
+    
+    try {
+        // 1. Fetch rows from Large File
+        const fdLarge = new FormData();
+        fdLarge.append('file', omLargeFile);
+        const resLarge = await fetch('/api/parse-gps-excel', {method: 'POST', body: fdLarge});
+        const dataLarge = await resLarge.json();
+        const largeRows = dataLarge.rows || [];
+        const largeHeaders = dataLarge.headers || omLargeHeaders;
+        
+        if (!largeRows.length) {
+            omShowStatus('err', 'الملف الكبير فارغ أو لا يحتوي على صفوف بيانات.');
+            return;
+        }
+        
+        // Find Large Plate Column Name
+        let largePlateCol = (document.getElementById('omLargeCol') ? document.getElementById('omLargeCol').value : '') || 'رقم اللوحة';
+        if (!largeRows[0].hasOwnProperty(largePlateCol)) {
+            const foundK = Object.keys(largeRows[0]).find(k => k.includes('لوح') || k.includes('لوحة') || k.toLowerCase().includes('plate'));
+            if (foundK) largePlateCol = foundK;
+            else largePlateCol = Object.keys(largeRows[0])[0];
+        }
+        
+        // 2. Fetch or parse Small Plates
+        let searchPlatesList = [];
+        if (txtPlates) {
+            searchPlatesList = txtPlates.split(/[\\r\\n,]+/).map(s => s.trim()).filter(Boolean);
+        } else if (omSmallFile) {
+            const fdSmall = new FormData();
+            fdSmall.append('file', omSmallFile);
+            const resSmall = await fetch('/api/parse-gps-excel', {method: 'POST', body: fdSmall});
+            const dataSmall = await resSmall.json();
+            const smallRows = dataSmall.rows || [];
+            let smallPlateCol = (document.getElementById('omSmallCol') ? document.getElementById('omSmallCol').value : '') || 'رقم اللوحة';
+            if (smallRows.length && !smallRows[0].hasOwnProperty(smallPlateCol)) {
+                const foundK = Object.keys(smallRows[0]).find(k => k.includes('لوح') || k.includes('لوحة') || k.toLowerCase().includes('plate'));
+                if (foundK) smallPlateCol = foundK;
+                else smallPlateCol = Object.keys(smallRows[0])[0];
+            }
+            searchPlatesList = smallRows.map(r => String(r[smallPlateCol] || '').trim()).filter(Boolean);
+        }
+        
+        if (!searchPlatesList.length) {
+            omShowStatus('err', 'لم يتم العثور على أي لوحات في قائمة البحث.');
+            return;
+        }
+        
+        // 3. Build normalized map for search
+        const searchSet = new Set(searchPlatesList.map(p => normPlate(p)).filter(Boolean));
+        const matchedPlatesFound = new Set();
+        const matchedRows = [];
+        
+        // Check GPS column in large rows
+        let gpsColName = Object.keys(largeRows[0]).find(k => k.toLowerCase().includes('gps') || k.includes('موقع') || k.includes('احداثيات') || k.includes('إحداثيات')) || '';
+        
+        largeRows.forEach(row => {
+            const rowPlate = String(row[largePlateCol] || '').trim();
+            const normP = normPlate(rowPlate);
+            if (normP && searchSet.has(normP)) {
+                matchedPlatesFound.add(normP);
+                matchedRows.push(row);
+            }
+        });
+        
+        omMatchedRowsData = matchedRows;
+        
+        // 4. Update Stats Cards
+        const totalMatchedRows = matchedRows.length;
+        const totalMatchedUnique = matchedPlatesFound.size;
+        const totalUnmatched = Math.max(0, searchSet.size - totalMatchedUnique);
+        
+        const mEl = document.getElementById('omRMatched');
+        const pEl = document.getElementById('omRPlates');
+        const uEl = document.getElementById('omRUnmatched');
+        if (mEl) mEl.textContent = totalMatchedRows;
+        if (pEl) pEl.textContent = totalMatchedUnique;
+        if (uEl) uEl.textContent = totalUnmatched;
+        
+        const rLCol = document.getElementById('omRLargeCol');
+        if (rLCol) rLCol.textContent = largePlateCol;
+        const rSCol = document.getElementById('omRSmallCol');
+        if (rSCol) rSCol.textContent = (document.getElementById('omSmallCol') ? document.getElementById('omSmallCol').value : '') || 'نصي';
+        
+        // 5. Render Preview Table
+        const thead = document.getElementById('omMatchThead');
+        const tbody = document.getElementById('omMatchTbody');
+        const tableWrap = document.getElementById('omMatchTableWrap');
+        
+        if (thead && tbody && largeHeaders.length) {
+            thead.innerHTML = '<tr><th>#</th>' + largeHeaders.map(h => `<th>${h}</th>`).join('') + '</tr>';
+            tbody.innerHTML = matchedRows.slice(0, 100).map((r, i) => {
+                const tds = largeHeaders.map(h => {
+                    const val = r[h] || '';
+                    if (gpsColName && h === gpsColName && String(val).includes(',')) {
+                        return `<td><a href="https://www.google.com/maps?q=${encodeURIComponent(val)}" target="_blank" style="color:var(--teal);font-weight:700;text-decoration:none">📍 ${val}</a></td>`;
+                    }
+                    return `<td>${val}</td>`;
+                }).join('');
+                return `<tr><td>${i + 1}</td>${tds}</tr>`;
+            }).join('');
+            if (tableWrap) tableWrap.style.display = 'block';
+        }
+        
+        // 6. Show Result Box and enable download
+        const box = document.getElementById('omResultBox');
+        if (box) box.style.display = 'block';
+        const dlBtn = document.getElementById('omDlBtn');
+        if (dlBtn) dlBtn.style.display = 'inline-block';
+        
+        // 7. Perform GPS Sorting if GPS is present
+        if (gpsColName && matchedRows.length > 0) {
+            omProcessGpsSorting(matchedRows, gpsColName, largePlateCol);
+        }
+        
+        omShowStatus('ok', `🎉 تمت المطابقة بنجاح! وُجد ${totalMatchedRows} صف مطابق لـ ${totalMatchedUnique} لوحة.`);
+        box.scrollIntoView({behavior: 'smooth'});
+    } catch(err) {
+        console.error("Match error:", err);
+        omShowStatus('err', 'حدث خطأ أثناء إجراء المطابقة: ' + err.message);
+    }
+}
+
+function omProcessGpsSorting(rows, gpsCol, plateCol){
+    let myLat = parseFloat(document.getElementById('omGpsMyLat') ? document.getElementById('omGpsMyLat').value : 0) || 24.7136;
+    let myLon = parseFloat(document.getElementById('omGpsMyLon') ? document.getElementById('omGpsMyLon').value : 0) || 46.6753;
+    
+    function haversine(lat1, lon1, lat2, lon2) {
+        const R = 6371; // km
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+    
+    const sorted = [];
+    rows.forEach(r => {
+        const gpsStr = String(r[gpsCol] || '').trim();
+        let dist = 99999;
+        let lat = 0, lon = 0;
+        if (gpsStr.includes(',')) {
+            const parts = gpsStr.split(',');
+            lat = parseFloat(parts[0]);
+            lon = parseFloat(parts[1]);
+            if (!isNaN(lat) && !isNaN(lon)) {
+                dist = haversine(myLat, myLon, lat, lon);
+            }
+        }
+        sorted.push({
+            plate: r[plateCol] || '',
+            gps: gpsStr,
+            vehicle_type: r['نوع السيارة'] || r['النوع'] || '',
+            notes: r['ملاحظات'] || '',
+            dist: dist,
+            duration: Math.round(dist / 40 * 60), // 40 km/h avg speed
+            date: r['تاريخ التسجيل'] || r['التاريخ'] || '',
+            raw: r
+        });
+    });
+    
+    sorted.sort((a, b) => a.dist - b.dist);
+    omGpsSortedData = sorted;
+    
+    const succCount = sorted.filter(s => s.dist < 99990).length;
+    const failCount = sorted.length - succCount;
+    const nearest = succCount > 0 ? (sorted[0].dist.toFixed(1) + ' km') : '—';
+    
+    const sEl = document.getElementById('omGpsRSucc');
+    const fEl = document.getElementById('omGpsRFail');
+    const nEl = document.getElementById('omGpsRNearest');
+    if (sEl) sEl.textContent = succCount;
+    if (fEl) fEl.textContent = failCount;
+    if (nEl) nEl.textContent = nearest;
+    
+    const gpsTbody = document.getElementById('omGpsResultTableBody');
+    const gpsWrap = document.getElementById('omGpsResultTableWrap');
+    if (gpsTbody) {
+        gpsTbody.innerHTML = sorted.map((s, i) => `
+            <tr>
+                <td>${i+1}</td>
+                <td style="font-weight:800;color:var(--text)">${s.plate}</td>
+                <td><a href="https://www.google.com/maps?q=${encodeURIComponent(s.gps)}" target="_blank" style="color:var(--teal);font-weight:700;text-decoration:none">📍 خريطة</a></td>
+                <td>${s.vehicle_type}</td>
+                <td>${s.notes}</td>
+                <td><strong style="color:var(--green)">${s.dist < 99990 ? s.dist.toFixed(2) : '—'}</strong></td>
+                <td>${s.dist < 99990 ? s.duration + ' د' : '—'}</td>
+                <td>${s.date}</td>
+            </tr>
+        `).join('');
+        if (gpsWrap) gpsWrap.style.display = 'block';
+    }
+}
+
+async function omOpenExcelResult() {
+    if (!omMatchedRowsData || !omMatchedRowsData.length) {
+        alert('لا توجد صفوف مطابقة لتصديرها.');
+        return;
+    }
+    const fd = new FormData();
+    fd.append('rows_json', JSON.stringify(omMatchedRowsData));
+    fd.append('sheet_name', 'نتائج المطابقة');
+    try {
+        const res = await fetch('/api/export-excel', {method: 'POST', body: fd});
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `نتائج_المطابقة_${new Date().toISOString().slice(0,10)}.xlsx`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch(e) {
+        alert('تعذر تحميل ملف Excel: ' + e.message);
+    }
+}
+
+async function omDownloadGpsResult() {
+    if (!omGpsSortedData || !omGpsSortedData.length) {
+        alert('لا توجد نتائج GPS لتصديرها.');
+        return;
+    }
+    const exportRows = omGpsSortedData.map((s, i) => ({
+        "الترتيب": i + 1,
+        "رقم اللوحة": s.plate,
+        "GPS": s.gps,
+        "نوع السيارة": s.vehicle_type,
+        "المسافة_كم": s.dist < 99990 ? parseFloat(s.dist.toFixed(2)) : '',
+        "الوقت_المتوقع_دقيقة": s.dist < 99990 ? s.duration : '',
+        "ملاحظات": s.notes,
+        "تاريخ التسجيل": s.date
+    }));
+    
+    const fd = new FormData();
+    fd.append('rows_json', JSON.stringify(exportRows));
+    fd.append('sheet_name', 'مطابقة GPS بالأقرب');
+    try {
+        const res = await fetch('/api/export-excel', {method: 'POST', body: fd});
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `نتائج_GPS_مرتبة_بالأقرب_${new Date().toISOString().slice(0,10)}.xlsx`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch(e) {
+        alert('تعذر تحميل ملف Excel: ' + e.message);
+    }
+}
+
 function omClearSavedFieldMatch() {
+    omMatchedRowsData = [];
+    omGpsSortedData = [];
     const box = document.getElementById('omResultBox');
     if (box) box.style.display = 'none';
+    const wrap = document.getElementById('omMatchTableWrap');
+    if (wrap) wrap.style.display = 'none';
+    const gpsWrap = document.getElementById('omGpsResultTableWrap');
+    if (gpsWrap) gpsWrap.style.display = 'none';
+    omShowStatus('ok', 'تم مسح نتيجة المطابقة.');
 }
 
 function omRefreshCheckLoc() {
+    if (!navigator.geolocation) {
+        alert('المتصفح لا يدعم تحديد الموقع الجغرافي.');
+        return;
+    }
     const txt = document.getElementById('omGpsLocTxt');
     const dot = document.getElementById('omGpsLocDot');
-    if (txt) txt.textContent = "تم تحديث الموقع الحالي";
-    if (dot) dot.className = "dot on";
+    if (txt) txt.textContent = '⏳ جاري تحديد موقعك الحالي بدقة...';
+    if (dot) dot.className = 'dot';
+    
+    navigator.geolocation.getCurrentPosition(
+        (pos) => {
+            const lat = pos.coords.latitude.toFixed(6);
+            const lon = pos.coords.longitude.toFixed(6);
+            const latInp = document.getElementById('omGpsMyLat');
+            const lonInp = document.getElementById('omGpsMyLon');
+            if (latInp) latInp.value = lat;
+            if (lonInp) lonInp.value = lon;
+            if (txt) txt.textContent = `✅ تم التحديد: ${lat}, ${lon}`;
+            if (dot) dot.className = 'dot on';
+            
+            // Re-sort GPS if results already exist
+            if (omMatchedRowsData && omMatchedRowsData.length) {
+                let gpsCol = Object.keys(omMatchedRowsData[0]).find(k => k.toLowerCase().includes('gps') || k.includes('موقع')) || 'GPS';
+                let plateCol = (document.getElementById('omLargeCol') ? document.getElementById('omLargeCol').value : '') || 'رقم اللوحة';
+                omProcessGpsSorting(omMatchedRowsData, gpsCol, plateCol);
+            }
+        },
+        (err) => {
+            if (txt) txt.textContent = '❌ تعذر الحصول على الموقع (' + err.message + ')';
+            if (dot) dot.className = 'dot';
+        },
+        {enableHighAccuracy: true, timeout: 10000}
+    );
 }
 
 function omSetCheckLocDot(state, msg) {
@@ -285,8 +736,17 @@ function omSetCheckLocDot(state, msg) {
     if (dot) dot.className = "dot " + (state || "");
 }
 
-function omDownloadGpsResult() { alert("تحميل نتائج GPS..."); }
-function loadOmPersistedCheckFiles() { console.log("Persisted files loaded"); }
+function omTogglePw(inpId, btn){
+    const inp = document.getElementById(inpId);
+    if(inp){
+        inp.type = inp.type === 'password' ? 'text' : 'password';
+        btn.textContent = inp.type === 'password' ? '👁' : '🙈';
+    }
+}
+function omConfirmLargePw(){ if(omLargeFile) omOnCheckFileChange(omLargeFile, 'large'); }
+function omConfirmSmallPw(){ if(omSmallFile) omOnCheckFileChange(omSmallFile, 'small'); }
+function omResetCheckDetect(){}
+function loadOmPersistedCheckFiles(){}
 """
 
 @app.get("/static/_om_field.js")
@@ -445,7 +905,7 @@ def _parse_plates_from_arabic_text(text: str) -> list:
     return plates
 
 def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
-    """Ultra-fast Whisper transcription via Groq (100-200ms) with auto-MIME detection and dual-layer parser"""
+    """Ultra-fast Whisper transcription via Groq with unbiased vocabulary prompt and dual-layer parser"""
     groq_keys = cfg.get("groq_keys", [])
     if not groq_keys and cfg.get("groq_api_key"):
         groq_keys = [cfg.get("groq_api_key")]
@@ -464,7 +924,7 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
                 "model": "whisper-large-v3-turbo",
                 "language": "ar",
                 "temperature": "0.0",
-                "prompt": "أ ب ج د ر س ص ط ع ق ك ل م ن هـ و ى أ م د 1234 أ ب م 1234 أ ب ج 1234 واحد اثنين ثلاثة أربعة خمسة ستة سبعة ثمانية تسعة"
+                "prompt": "تسجيل صوتي لتسميع وتفريغ أرقام وحروف لوحات المركبات السعودية: ألف باء تاء ثاء جيم حاء خاء دال ذال راء زين سين شين صاد ضاد طاء ظاء عين غين فاء قاف كاف لام ميم نون هاء واو ياء صفر واحد اثنين ثلاثة أربعة خمسة ستة سبعة ثمانية تسعة"
             }
             resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=12)
             if resp.status_code == 200:
@@ -478,11 +938,11 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
                 if transcribed and len(transcribed.strip()) > 2:
                     try:
                         text_prompt = (
-                            f"أنت خبير استخراج لوحات سيارات سعودية. استخرج جميع اللوحات المذكورة في هذا النص الصوتي:\n"
+                            f"أنت خبير استخراج لوحات سيارات سعودية. استخرج جميع اللوحات المذكورة في هذا النص الصوتي بالضبط كما نُطقت:\n"
                             f"\"{transcribed}\"\n"
-                            f"كل لوحة تتكون من 3 حروف عربية و 1 إلى 4 أرقام.\n"
+                            f"كل لوحة تتكون من 3 حروف عربية مفصولة بمسافات و 1 إلى 4 أرقام.\n"
                             f"أرجع مصفوفة JSON فقط بالشكل:\n"
-                            f'[{"plate": "ر ك ع 7511", "found": true, "vehicle_type": "تويوتا", "notes": ""}]'
+                            f'[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا", "notes": ""}]'
                         )
                         payload = {
                             "contents": [{"parts": [{"text": text_prompt}]}],
@@ -566,43 +1026,37 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
     raise Exception(last_err or "All Gemini models and keys exhausted")
 
 def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "live") -> list:
-    """Dual-Engine transcription: Groq Whisper Turbo first (ultra-fast), then Gemini multi-model fallback"""
-    # 1. Groq Whisper (Blazing fast 100-200ms)
+    """High-accuracy transcription: Gemini 3.6/3.5 native audio first, with Groq Whisper fallback"""
+    # 1. Try Gemini Multimodal Audio (Best Arabic phonetic recognition for any spoken letters/numbers)
     try:
-        groq_plates = _call_groq_whisper(cfg, audio_data)
-        if groq_plates:
-            return groq_plates
-    except Exception as ge:
-        print(f"[Dual-Engine] Groq error: {ge}")
-
-    # 2. Gemini Multi-Model Fallback
-    mime_type, _ = _detect_audio_info(audio_data)
-    b64_audio = base64.b64encode(audio_data).decode("utf-8")
-    prompt = (
-        "أنت محرك ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية من الصوت.\n"
-        "المطلوب منك بدقة:\n"
-        "1. استمع بدقة للتسجيل الصوتي واستخرج جميع اللوحات المذكورة (قد يكون هناك لوحة أو عدة لوحات).\n"
-        "2. كل لوحة سعودية تتكون من 3 حروف عربية مفصولة بمسافات يليهم 1 إلى 4 أرقام (مثال: 'ر ك ع 7511' أو 'أ د هـ 9873' أو 'أ ب ج 1234').\n"
-        "3. تحويل أسماء الحروف العربية المنطوقة (ألف، باء، جيم، دال، راء، عين، كاف...) إلى الحرف المقابل مفصولاً بمسافات.\n"
-        "4. تحويل كافة الأرقام والكلمات العددية المنطوقة إلى أرقام (0-9).\n"
-        "5. استخرج نوع السيارة والملاحظات إن وُجدت في الصوت.\n"
-        "6. الإخراج المطلوب: يجب إرجاع النتيجة بصيغة مصفوفة JSON فقط بالشكل التالي:\n"
-        '[{"plate": "ر ك ع 7511", "found": true, "vehicle_type": "تويوتا", "notes": ""}]\n'
-        "إذا سمعت أكثر من لوحة في التسجيل، أرجعها جميعاً في المصفوفة."
-    )
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
-            ]
-        }],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.0
+        mime_type, _ = _detect_audio_info(audio_data)
+        b64_audio = base64.b64encode(audio_data).decode("utf-8")
+        prompt = (
+            "أنت خبير ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية من الصوت بدقة 100%.\n"
+            "المطلوب منك بدقة:\n"
+            "1. استمع بدقة للتسجيل الصوتي واكتب الحروف والأرقام المنطوقة بالضبط كما نُطقت بدون أي تخمين أو تثبيت على أمثلة سابقة.\n"
+            "2. كل لوحة سعودية تتكون من 3 حروف عربية مفصولة بمسافات يليهم 1 إلى 4 أرقام.\n"
+            "3. تحويل أسماء الحروف العربية المنطوقة (دال، باء، ألف، واو، كاف، راء، عين، سين، ميم، نون، جيم، حاء، خاء، طاء، صاد، قاف...) إلى الحرف المقابل مفصولاً بمسافات.\n"
+            "   (أمثلة للتنسيق: 'د ب أ 9075' أو 'د و ك 3759' أو 'ح ب س 9500' أو 'ر ك ع 7511').\n"
+            "4. تحويل كافة الأرقام والكلمات العددية المنطوقة إلى أرقام (0-9).\n"
+            "5. إذا ذُكرت عدة لوحات في التسجيل، استخرجها جميعاً في المصفوفة بالترتيب.\n"
+            "6. استخرج نوع السيارة والملاحظات إن وُجدت في الصوت.\n"
+            "7. الإخراج المطلوب: يجب إرجاع النتيجة بصيغة مصفوفة JSON فقط بالشكل التالي:\n"
+            '[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا", "notes": ""}]\n'
+            "إذا لم تسمع أي لوحة في التسجيل، أرجع مصفوفة فارغة: []"
+        )
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
+                ]
+            }],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "temperature": 0.0
+            }
         }
-    }
-    try:
         res_json = _call_gemini_with_rotation(cfg, payload, model_name, kind=kind)
         raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
         clean_text = raw_text.strip()
@@ -620,7 +1074,17 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
             print(f"[Gemini Audio Parser OK] Extracted: {plates}")
             return plates
     except Exception as gem_err:
-        print(f"[Gemini Transcribe Error] {gem_err}")
+        print(f"[Gemini Transcribe Error] {gem_err} -> Falling back to Groq Whisper")
+
+    # 2. Fallback to Groq Whisper Turbo + Phonetic Parser
+    try:
+        groq_plates = _call_groq_whisper(cfg, audio_data)
+        if groq_plates:
+            print(f"[Groq Fallback OK] Extracted: {groq_plates}")
+            return groq_plates
+    except Exception as ge:
+        print(f"[Dual-Engine Groq error] {ge}")
+
     return []
 
 
@@ -805,22 +1269,44 @@ async def parse_gps_excel(request: Request):
     rows = []
     try:
         form = await request.form()
-        file = form.get("file")
+        file = form.get("file") or form.get("large_file") or form.get("small_file") or form.get("large") or form.get("small")
         if file:
             content = await file.read()
-            wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
-            sheet = wb.active
-            all_rows = list(sheet.iter_rows(values_only=True))
-            if all_rows:
-                header_row = [str(cell) if cell is not None else "" for cell in all_rows[0]]
-                if any(header_row):
-                    headers = header_row
-                for r in all_rows[1:]:
-                    row_dict = {}
-                    for idx, val in enumerate(r):
-                        col_name = headers[idx] if idx < len(headers) else f"Column_{idx+1}"
-                        row_dict[col_name] = str(val) if val is not None else ""
-                    rows.append(row_dict)
+            try:
+                wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
+                sheet = wb.active
+                all_rows = list(sheet.iter_rows(values_only=True))
+                if all_rows:
+                    header_row = [str(cell).strip() if cell is not None else "" for cell in all_rows[0]]
+                    if any(header_row):
+                        headers = [h for h in header_row if h]
+                    for r in all_rows[1:]:
+                        if not any(r):
+                            continue
+                        row_dict = {}
+                        for idx, val in enumerate(r):
+                            col_name = headers[idx] if idx < len(headers) else f"Column_{idx+1}"
+                            row_dict[col_name] = str(val).strip() if val is not None else ""
+                        rows.append(row_dict)
+            except Exception:
+                # CSV Fallback
+                import csv
+                try:
+                    text_str = content.decode("utf-8-sig", errors="ignore")
+                    reader = csv.reader(io.StringIO(text_str))
+                    all_lines = list(reader)
+                    if all_lines:
+                        headers = [h.strip() for h in all_lines[0] if h.strip()]
+                        for r in all_lines[1:]:
+                            if not any(r):
+                                continue
+                            row_dict = {}
+                            for idx, val in enumerate(r):
+                                col_name = headers[idx] if idx < len(headers) else f"Column_{idx+1}"
+                                row_dict[col_name] = val.strip() if val else ""
+                            rows.append(row_dict)
+                except Exception as ce:
+                    print("CSV fallback parse error:", ce)
     except Exception as e:
         print("Excel parsing exception:", e)
             
