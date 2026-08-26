@@ -969,7 +969,7 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
         mime_type, _ = _detect_audio_info(audio_data)
         b64_audio = base64.b64encode(audio_data).decode("utf-8")
         prompt = (
-            "أنت خبير ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية من الصوت بدقة 100% بدون أي تفويت أو أخطاء.\n"
+            "أنت خبير ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية وبياناتها (الشارع، موقع الشارع، الحي، نوع السيارة، الملاحظات) من الصوت بدقة 100% بدون أي تفويت أو أخطاء.\n"
             "المطلوب منك بدقة بالغة:\n"
             "1. استمع بدقة للتسجيل الصوتي بالكامل من أول ثانية حتى آخر ثانية واستخرج جميع اللوحات المذكورة بدون استثناء أو اختصار.\n"
             "2. كل لوحة سعودية تتكون من 3 حروف عربية مفصولة بمسافات يليهم 1 إلى 4 أرقام (مثال: 'د ب أ 9075' أو 'د و ك 3759' أو 'ح ب س 9500' أو 'ر ك ع 7511').\n"
@@ -982,9 +982,14 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
             "   - إذا نطق المتحدث لوحة معينة ثم قال بعدها كلمة تصحيح (مثل: 'تعديل'، 'قصدي'، 'أقصد'، 'لا'، 'معليش'، 'مسح'، 'بدل'):\n"
             "   - يجب فوراً استبدال اللوحة السابقة باللوحة الجديدة المصححة فقط، وتجاهل وحذف اللوحة الخاطئة الأولى من المصفوفة تماماً حتى لا تتكرر.\n"
             "6. تحويل كافة الأرقام والكلمات العددية المنطوقة إلى أرقام إنجليزية (0-9).\n"
-            "7. استخرج نوع السيارة والملاحظات إن وُجدت في الصوت.\n"
+            "7. استخراج كافة التفاصيل المنطوقة مع اللوحة بدقة:\n"
+            "   - vehicle_type: نوع السيارة وطرازها ولونها إن ذُكر (مثل: 'تويوتا كامري أبيض'، 'هيونداي النترا'، 'فورد تورس').\n"
+            "   - street_name: اسم الشارع أو الطريق إن ذُكر (مثل: 'طريق الملك فهد'، 'شارع العليا'، 'شارع الثلاثين').\n"
+            "   - street_location: موقع أو وصف السيارة في الشارع (مثل: 'يمين الشارع'، 'يسار الشارع'، 'أمام الصيدلية'، 'بجوار المسجد'، 'مواقف العمارة').\n"
+            "   - district_name: اسم الحي إن ذُكر (مثل: 'حي العليا'، 'حي الملقا'، 'حي النرجس').\n"
+            "   - notes: أي ملاحظات أخرى حول السيارة (مثل: 'سليمة'، 'مصدومة من الخلف'، 'مسحوبة'، 'بدون لوحة أمامية').\n"
             "8. الإخراج المطلوب: يجب إرجاع النتيجة بصيغة مصفوفة JSON فقط بالشكل التالي:\n"
-            '[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا", "notes": ""}]\n'
+            '[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا كامري", "street_name": "طريق الملك فهد", "street_location": "يمين الشارع", "district_name": "العليا", "notes": "سليمة"}]\n'
             "إذا لم تسمع أي لوحة في التسجيل، أرجع مصفوفة فارغة: []"
         )
         payload = {
@@ -1043,6 +1048,7 @@ async def process_audio(request: Request):
         model_name = str(form.get("model_name") or cfg.get("gemini_model", "gemini-3.6-flash"))
         recorder_name = str(form.get("recorder_name") or "")
         district = str(form.get("district_default") or "")
+        gps_data_raw = form.get("gps_data")
 
         if audio_file:
             content = await audio_file.read()
@@ -1051,6 +1057,31 @@ async def process_audio(request: Request):
             print(f"[Process Audio] Job {job_id} extracted plates count: {len(plates)}")
         else:
             plates = []
+
+        # Enrich plates with GPS coordinates and metadata
+        def_gps = ""
+        if gps_data_raw:
+            try:
+                gps_list = json.loads(gps_data_raw)
+                if isinstance(gps_list, list) and gps_list:
+                    mid_idx = (len(gps_list) - 1) // 2
+                    pt = gps_list[mid_idx]
+                    if isinstance(pt, dict) and "lat" in pt and "lon" in pt:
+                        def_gps = f"{float(pt['lat']):.6f},{float(pt['lon']):.6f}"
+                    elif isinstance(pt, str):
+                        def_gps = pt
+            except Exception:
+                pass
+
+        for p in plates:
+            if not p.get("gps") and def_gps:
+                p["gps"] = def_gps
+            if not p.get("street_location") and def_gps:
+                p["street_location"] = def_gps
+            if not p.get("district_name") and district:
+                p["district_name"] = district
+            if not p.get("recorder_name") and recorder_name:
+                p["recorder_name"] = recorder_name
 
         JOB_STORE[job_id] = {
             "status": "done",
@@ -1522,16 +1553,32 @@ async def export_excel(request: Request):
         thin = Side(style="thin", color="CCCCCC")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-        # Determine columns from first row or defaults
-        default_cols = ["رقم اللوحة", "نوع السيارة", "الحي", "الشارع", "GPS", "المسجّل", "التاريخ", "الوقت", "ملاحظات"]
+        # Standard field mapping between internal keys and export display headers
+        FIELD_MAP = [
+            ("رقم اللوحة", ["full_plate", "plate", "رقم اللوحة", "اللوحة", "plate_number"]),
+            ("GPS", ["gps", "GPS", "موقع", "احداثيات", "إحداثيات"]),
+            ("الحي", ["district_name", "district", "الحي", "حي", "المنطقة"]),
+            ("الشارع", ["street_name", "street", "الشارع", "شارع"]),
+            ("ملاحظات", ["notes", "ملاحظات", "ملاحظة", "location_details", "تفاصيل"]),
+            ("نوع السيارة", ["vehicle_type", "نوع السيارة", "car_type", "النوع", "طراز"]),
+            ("موقع الشارع", ["street_location", "موقع الشارع", "location", "وصف الموقع"]),
+            ("المسجّل", ["recorder_name", "المسجّل", "المسجل", "المندوب"]),
+            ("التاريخ", ["recording_date", "date", "التاريخ", "تاريخ التسجيل"]),
+        ]
+
+        # Determine export headers
+        cols = [header for header, _ in FIELD_MAP]
+
+        # Check if there are any custom extra columns in rows
         if rows:
-            cols = list(rows[0].keys())
-            # Ensure default cols come first if present
-            ordered = [c for c in default_cols if c in cols]
-            ordered += [c for c in cols if c not in ordered]
-            cols = ordered
-        else:
-            cols = default_cols
+            known_keys = set()
+            for _, aliases in FIELD_MAP:
+                known_keys.update(aliases)
+            for r in rows:
+                if isinstance(r, dict):
+                    for k in r.keys():
+                        if k not in known_keys and k not in cols and not k.startswith("_") and k not in ["id", "blob", "url", "status", "found"]:
+                            cols.append(k)
 
         # Write header row
         for col_idx, col_name in enumerate(cols, start=1):
@@ -1541,28 +1588,48 @@ async def export_excel(request: Request):
             cell.alignment = center_align
             cell.border = border
 
+        # Helper to get value for a header from a row
+        def get_row_val(row_dict, header_name):
+            if not isinstance(row_dict, dict):
+                return ""
+            # 1. Direct match
+            if header_name in row_dict and row_dict[header_name] not in [None, ""]:
+                return str(row_dict[header_name]).strip()
+            # 2. Alias match
+            for h, aliases in FIELD_MAP:
+                if h == header_name:
+                    for a in aliases:
+                        if a in row_dict and row_dict[a] not in [None, ""]:
+                            return str(row_dict[a]).strip()
+            return ""
+
         # Write data rows
         alt_fill = PatternFill("solid", fgColor="EEF2F7")
         for row_idx, row in enumerate(rows, start=2):
             fill = alt_fill if row_idx % 2 == 0 else None
             for col_idx, col_name in enumerate(cols, start=1):
-                val = row.get(col_name, "")
-                # Apply district default if Hara column is empty
+                val = get_row_val(row, col_name)
+                # Fallback for district
                 if col_name == "الحي" and not val and district_default:
                     val = district_default
-                cell = ws.cell(row=row_idx, column=col_idx, value=str(val) if val else "")
+                # Fallback for street_location if empty but GPS exists
+                if col_name == "موقع الشارع" and not val:
+                    val = get_row_val(row, "GPS")
+
+                cell = ws.cell(row=row_idx, column=col_idx, value=val if val else "")
                 cell.alignment = center_align
                 cell.border = border
                 if fill:
                     cell.fill = fill
 
         # Auto-fit column widths
-        for col_idx, col_name in enumerate(cols, start=1):
-            max_len = max(
-                len(str(col_name)),
-                *[len(str(rows[r].get(col_name, "") or "")) for r in range(len(rows))]
-            ) if rows else len(col_name)
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 40)
+        for col_idx in range(1, len(cols) + 1):
+            max_len = 12
+            for row_idx in range(1, len(rows) + 2):
+                c_val = ws.cell(row=row_idx, column=col_idx).value
+                if c_val:
+                    max_len = max(max_len, len(str(c_val)))
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 45)
 
         # Freeze header row
         ws.freeze_panes = "A2"

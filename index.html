@@ -4121,13 +4121,34 @@ function _districtFromInput(){
   const el=document.getElementById('districtName');
   return (el&&el.value||'').trim();
 }
-function _appendPlatesWithDistrict(plates,when){
+function _appendPlatesWithDistrict(plates, when, gpsPoints){
   if(!Array.isArray(tableRows)) tableRows=[];
   const list=Array.isArray(plates)?plates:[];
   const dn=_districtFromInput();
+  const recName=(document.getElementById('recorderName')?document.getElementById('recorderName').value:'').trim();
+  const streetNameInp=(document.getElementById('streetName')?document.getElementById('streetName').value:'').trim();
+  
+  let midGps = '';
+  if (Array.isArray(gpsPoints) && gpsPoints.length > 0) {
+    const midIdx = Math.floor((gpsPoints.length - 1) / 2);
+    const pt = gpsPoints[midIdx];
+    if (pt && pt.lat && pt.lon) {
+      midGps = `${Number(pt.lat).toFixed(6)},${Number(pt.lon).toFixed(6)}`;
+    } else if (typeof pt === 'string') {
+      midGps = pt;
+    }
+  }
+
   list.forEach(p=>{
-    p.district_name=dn;
-    p.recording_date=deviceRecordingStamp(when);
+    p.full_plate = p.full_plate || p.plate || '';
+    p.district_name = (p.district_name || dn || '').trim();
+    p.street_name = (p.street_name || streetNameInp || '').trim();
+    p.notes = (p.notes || p.location_details || '').trim();
+    p.vehicle_type = (p.vehicle_type || '').trim();
+    p.gps = (p.gps || midGps || '').trim();
+    p.street_location = (p.street_location || p.location_details || p.gps || midGps || '').trim();
+    p.recorder_name = (p.recorder_name || recName || '').trim();
+    p.recording_date = p.recording_date || deviceRecordingStamp(when);
     tableRows.push(p);
   });
 }
@@ -4160,6 +4181,7 @@ async function directSend(){
   fd.append('gps_data',JSON.stringify(gps));
   fd.append('model_name',getUserRestModel());
   fd.append('recorder_name',document.getElementById('recorderName').value.trim());
+  fd.append('district_default',_districtFromInput());
   fd.append('sheet_name',document.getElementById('sheetName').value.trim()||'\u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0645\u0631\u0643\u0628\u0627\u062A');
 
   try{
@@ -4173,7 +4195,7 @@ async function directSend(){
     if(!jobId) throw new Error('لم يُرجع job_id');
     const data=await pollTranscribeStatus(jobId);
     item.status='done';renderQueue();
-    _appendPlatesWithDistrict(Array.isArray(data.plates)?data.plates:[],item.recordingStartedAt);
+    _appendPlatesWithDistrict(Array.isArray(data.plates)?data.plates:[],item.recordingStartedAt,item.gps);
     saveTable();renderTable();
     const total=typeof data.total==='number'?data.total:(Array.isArray(data.plates)?data.plates.length:0);
     const msg='\u2714 \u062A\u0645 \u0627\u0644\u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0645\u0628\u0627\u0634\u0631 \u2014 \u0627\u0633\u062A\u064F\u062E\u0631\u062C '+total+' \u0644\u0648\u062D\u0629';
@@ -4268,6 +4290,7 @@ async function sendItem(idx){
   fd.append('gps_data',JSON.stringify(item.gps));
   fd.append('model_name',getUserRestModel());
   fd.append('recorder_name',document.getElementById('recorderName').value.trim());
+  fd.append('district_default',_districtFromInput());
   fd.append('sheet_name',document.getElementById('sheetName').value.trim()||'بيانات المركبات');
   try{
     const res=await fetch('/api/process',{method:'POST',body:fd});
@@ -4280,7 +4303,7 @@ async function sendItem(idx){
     if(!jobId) throw new Error('لم يُرجع job_id');
     const data=await pollTranscribeStatus(jobId);
     item.status='done';renderQueue();
-    _appendPlatesWithDistrict(Array.isArray(data.plates)?data.plates:[],item.recordingStartedAt);
+    _appendPlatesWithDistrict(Array.isArray(data.plates)?data.plates:[],item.recordingStartedAt,item.gps);
     saveTable();renderTable();
     const total=typeof data.total==='number'?data.total:(Array.isArray(data.plates)?data.plates.length:0);
     const msg='✔ استُخرج '+total+' لوحة من "'+item.name+'"';
@@ -4329,23 +4352,44 @@ function syncTafrighSheetTitle(){
 }
 function renderTable(){
   if(!Array.isArray(tableRows)) tableRows=[];
-  const body=document.getElementById('excelBody');body.innerHTML='';
+  const body=document.getElementById('excelBody');
+  if(!body) return;
+  body.innerHTML='';
   tableRows.forEach((row,i)=>{
     const tr=document.createElement('tr');
+    const plateVal = row.full_plate || row.plate || '';
+    const gpsVal = (row.gps || '').trim();
+    const streetLoc = row.street_location || streetLocForRow(row) || '';
+    const gpsLink = (gpsVal && gpsVal !== '—' && gpsVal.includes(','))
+      ? '<a href="https://www.google.com/maps?q='+encodeURIComponent(gpsVal)+'" target="_blank" rel="noopener" style="color:#4fc3f7;font-weight:700;text-decoration:underline;font-size:.78rem">📍 '+esc(gpsVal)+'</a>'
+      : (gpsVal ? esc(gpsVal) : '—');
+
     tr.innerHTML=
-      '<td class="td-plate td-edit" contenteditable="true" onblur="editCell('+i+',\'full_plate\',this.textContent)">'+esc(row.full_plate||row.plate||'')+'</td>'
-      +'<td class="td-gps">'+(row.gps&&row.gps.trim()&&row.gps!=='—'?'<a href="https://www.google.com/maps?q='+encodeURIComponent(row.gps.trim())+'" target="_blank" rel="noopener" style="color:#4fc3f7;text-decoration:underline;font-size:.78rem">'+esc(row.gps.trim())+'</a>':'—')+'</td>'
+      '<td class="td-plate td-edit" contenteditable="true" onblur="editCell('+i+',\'full_plate\',this.textContent)">'+esc(plateVal)+'</td>'
+      +'<td class="td-gps" contenteditable="true" onblur="editCell('+i+',\'gps\',this.textContent)">'+gpsLink+'</td>'
       +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'district_name\',this.textContent)">'+esc(row.district_name||'')+'</td>'
       +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'street_name\',this.textContent)">'+esc(row.street_name||'')+'</td>'
       +'<td class="td-edit td-locdetails" style="font-size:.78rem;color:var(--dim2)" contenteditable="true" onblur="editCell('+i+',\'notes\',this.textContent)">'+esc(row.notes||row.location_details||'')+'</td>'
       +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'vehicle_type\',this.textContent)">'+esc(row.vehicle_type||'')+'</td>'
-      +'<td class="td-gps">'+esc(streetLocForRow(row)||'—')+'</td>'
+      +'<td class="td-edit td-locdetails" contenteditable="true" onblur="editCell('+i+',\'street_location\',this.textContent)">'+esc(streetLoc||'—')+'</td>'
       +'<td><button class="del-row" onclick="deleteRow('+i+')">✕</button></td>';
     body.appendChild(tr);
   });
-  document.getElementById('rowCount').textContent=tableRows.length+' صف';
+  const rc=document.getElementById('rowCount');
+  if(rc) rc.textContent=tableRows.length+' صف';
 }
-function editCell(idx,key,val){if(tableRows[idx])tableRows[idx][key]=val.trim();saveTable();}
+function editCell(idx,key,val){
+  if(tableRows[idx]){
+    tableRows[idx][key]=val.trim();
+    if(key==='full_plate') tableRows[idx]['plate']=val.trim();
+    if(key==='gps') {
+      if(!tableRows[idx]['street_location'] || tableRows[idx]['street_location']==='—') {
+        tableRows[idx]['street_location']=val.trim();
+      }
+    }
+  }
+  saveTable();
+}
 function deleteRow(idx){tableRows.splice(idx,1);saveTable();renderTable();}
 function clearTable(){if(!tableRows.length)return;if(confirm('هل تريد مسح كل الصفوف؟')){tableRows=[];saveTable();renderTable();}}
 
