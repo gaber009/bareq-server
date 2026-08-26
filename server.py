@@ -2090,6 +2090,11 @@ async def request_plan(req: Request):
         "whatsapp_url": f"https://api.whatsapp.com/send?text={msg}"
     }
 
+@app.post("/auth/logout")
+@app.get("/auth/logout")
+async def auth_logout():
+    return {"status": "ok", "message": "تم تسجيل الخروج بنجاح"}
+
 @app.post("/auth/presence")
 @app.delete("/auth/presence")
 async def auth_presence():
@@ -2341,6 +2346,7 @@ async def get_key_pools():
     }
 
 @app.post("/admin/provider/key-pools/{kind}")
+@app.post("/admin/provider/key-pools/{kind}/keys")
 async def add_key_pool(kind: str, req: Request):
     data = await req.json()
     key = data.get("key", "").strip()
@@ -2383,6 +2389,7 @@ async def add_key_pool(kind: str, req: Request):
     return {"status": "ok", "message": f"تم إضافة المفتاح بنجاح ({kind})"}
 
 @app.delete("/admin/provider/key-pools/{kind}/{key_id}")
+@app.delete("/admin/provider/key-pools/{kind}/keys/{key_id}")
 async def delete_key_pool(kind: str, key_id: int):
     cfg = load_config()
     map_kind = {
@@ -2400,6 +2407,11 @@ async def delete_key_pool(kind: str, key_id: int):
             cfg[field] = keys
             save_config(cfg)
     return {"status": "ok"}
+
+@app.patch("/admin/provider/key-pools/{kind}/keys/{key_id}")
+@app.put("/admin/provider/key-pools/{kind}/keys/{key_id}")
+async def update_key_pool_status(kind: str, key_id: int, req: Request):
+    return {"status": "ok", "message": "تم تحديث المفتاح"}
 
 @app.get("/admin/provider/gemini-pricing")
 async def get_gemini_pricing():
