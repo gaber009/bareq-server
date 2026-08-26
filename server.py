@@ -804,33 +804,23 @@ def _get_next_gemini_key(cfg: dict, kind: str = "rest") -> str:
 
 SPATIAL_LETTER_WORDS = [
     ('ألف', 'أ'), ('الف', 'أ'), ('إلف', 'أ'), ('إليف', 'أ'),
-    ('باء', 'ب'), ('با', 'ب'),
-    ('تاء', 'ت'), ('تا', 'ت'),
-    ('ثاء', 'ث'), ('ثا', 'ث'),
-    ('جيم', 'ج'), ('جم', 'ج'),
-    ('حاء', 'ح'), ('حا', 'ح'),
-    ('خاء', 'خ'), ('خا', 'خ'),
-    ('دال', 'د'), ('دا', 'د'),
-    ('ذال', 'ذ'), ('ذا', 'ذ'),
-    ('راء', 'ر'), ('را', 'ر'), ('ري', 'ر'),
-    ('زين', 'ز'), ('زاي', 'ز'), ('زا', 'ز'),
-    ('سين', 'س'), ('سا', 'س'),
-    ('شين', 'ش'), ('شا', 'ش'),
-    ('صاد', 'ص'), ('صا', 'ص'),
-    ('ضاد', 'ض'), ('ضا', 'ض'),
-    ('طاء', 'ط'), ('طا', 'ط'),
-    ('ظاء', 'ظ'), ('ظا', 'ظ'),
-    ('عين', 'ع'), ('عا', 'ع'),
-    ('غين', 'غ'), ('غا', 'غ'),
-    ('فاء', 'ف'), ('فا', 'ف'),
-    ('قاف', 'ق'), ('قا', 'ق'),
-    ('كاف', 'ك'), ('كا', 'ك'),
-    ('لام', 'ل'), ('لا', 'ل'),
-    ('ميم', 'م'), ('ما', 'م'),
-    ('نون', 'ن'), ('نا', 'ن'),
-    ('هاء', 'هـ'), ('ها', 'هـ'),
+    ('باء', 'ب'), ('تاء', 'ت'), ('ثاء', 'ث'),
+    ('جيم', 'ج'), ('حاء', 'ح'), ('خاء', 'خ'),
+    ('دال', 'د'), ('ذال', 'ذ'), ('راء', 'ر'),
+    ('زين', 'ز'), ('زاي', 'ز'),
+    ('سين', 'س'), ('شين', 'ش'),
+    ('صاد', 'ص'), ('ضاد', 'ض'),
+    ('طاء', 'ط'), ('ظاء', 'ظ'),
+    ('عين', 'ع'), ('غين', 'غ'),
+    ('فاء', 'ف'),
+    ('قاف', 'ق'), ('قيف', 'ق'),
+    ('كاف', 'ك'), ('كيف', 'ك'),
+    ('لام', 'ل'),
+    ('ميم', 'م'),
+    ('نون', 'ن'),
+    ('هاء', 'هـ'),
     ('واو', 'و'),
-    ('ياء', 'ى'), ('يا', 'ى')
+    ('ياء', 'ى')
 ]
 
 def _detect_audio_info(data: bytes) -> tuple[str, str]:
@@ -864,18 +854,16 @@ NUM_WORDS = [
 ]
 
 def _parse_plates_from_arabic_text(text: str) -> list:
-    """Parse multiple or single license plates from transcribed text with full phonetic normalization"""
+    """Parse multiple or single license plates from transcribed text with full phonetic normalization and voice correction replacement"""
     if not text:
         return []
     
     import re
     t = text
     for w, d in NUM_WORDS:
-        t = re.sub(r'\b' + re.escape(w) + r'\b', d, t)
-        t = t.replace(w, d)
+        t = re.sub(r'(?<!\w)' + re.escape(w) + r'(?!\w)', d, t)
     for w, l in SPATIAL_LETTER_WORDS:
-        t = re.sub(r'\b' + re.escape(w) + r'\b', l, t)
-        t = t.replace(w, l)
+        t = re.sub(r'(?<!\w)' + re.escape(w) + r'(?!\w)', l, t)
 
     # Merge isolated digit sequences (e.g. "1 2 3 4" -> "1234")
     prev = ""
@@ -883,26 +871,46 @@ def _parse_plates_from_arabic_text(text: str) -> list:
         prev = t
         t = re.sub(r'(\d)\s+(\d)', r'\1\2', t)
 
-    plates = []
-    # Pattern: 3 letters + 1-4 digits (handles spaced or unspaced letters)
-    matches = re.findall(r'([أ-يى]\s*[أ-يى]\s*[أ-يى])\s*(\d{1,4})', t)
-    for letters_raw, digits in matches:
-        lets = [c for c in letters_raw if c not in (' ', '\t')]
-        if len(lets) == 3:
-            plate_fmt = f"{lets[0]} {lets[1]} {lets[2]} {digits}"
-            plates.append({"plate": plate_fmt, "found": True, "vehicle_type": "تويوتا", "notes": ""})
+    # Split by voice correction keywords
+    corr_pattern = re.compile(r'\b(تعديل|قصدي|أقصد|اقصد|بدل|عفواً|عفوا|معليش|لا\s+قصدي)\b')
+    parts = corr_pattern.split(t)
+    final_plates = []
+    
+    for idx, part in enumerate(parts):
+        if not part:
+            continue
+        if corr_pattern.match(part.strip()):
+            continue
+        
+        is_after_correction = (idx > 0 and bool(corr_pattern.match(parts[idx-1].strip())))
+        matches = re.findall(r'([أ-يى]\s*[أ-يى]\s*[أ-يى])\s*(\d{1,4})', part)
+        seg_plates = []
+        for letters_raw, digits in matches:
+            lets = [c for c in letters_raw if c not in (' ', '\t')]
+            if len(lets) == 3:
+                seg_plates.append({"plate": f"{lets[0]} {lets[1]} {lets[2]} {digits}", "found": True, "vehicle_type": "تويوتا", "notes": ""})
+        
+        if is_after_correction and seg_plates:
+            if final_plates:
+                # Overwrite/replace last plate with the corrected plate
+                final_plates[-1] = seg_plates[0]
+                final_plates.extend(seg_plates[1:])
+            else:
+                final_plates.extend(seg_plates)
+        else:
+            final_plates.extend(seg_plates)
 
     # If no plates matched with regex, try fallback to plate_decoder if available
-    if not plates:
+    if not final_plates:
         try:
             from plate_decoder import get_decoder
             dec = get_decoder().decode_final(text)
             if dec.get("valid") and dec.get("plate"):
-                plates.append({"plate": dec["plate"], "found": True, "vehicle_type": "تويوتا", "notes": ""})
+                final_plates.append({"plate": dec["plate"], "found": True, "vehicle_type": "تويوتا", "notes": ""})
         except Exception:
             pass
 
-    return plates
+    return final_plates
 
 def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
     """Ultra-fast Whisper transcription via Groq with unbiased vocabulary prompt and dual-layer parser"""
@@ -985,7 +993,7 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
     if not keys:
         raise Exception("لا يوجد مفتاح Gemini — أضف مفتاحاً من لوحة الإدارة")
 
-    req_timeout = 6 if kind == "live" else 25
+    req_timeout = 6 if kind == "live" else 120
     models_to_try = [model_name] if model_name in FALLBACK_MODELS else []
     for m in FALLBACK_MODELS:
         if m not in models_to_try:
@@ -1017,7 +1025,7 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
             for key in keys:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
                 try:
-                    resp = requests.post(url, json=payload, timeout=20)
+                    resp = requests.post(url, json=payload, timeout=req_timeout)
                     if resp.status_code == 200:
                         return resp.json()
                 except Exception:
@@ -1032,16 +1040,21 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
         mime_type, _ = _detect_audio_info(audio_data)
         b64_audio = base64.b64encode(audio_data).decode("utf-8")
         prompt = (
-            "أنت خبير ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية من الصوت بدقة 100%.\n"
-            "المطلوب منك بدقة:\n"
-            "1. استمع بدقة للتسجيل الصوتي واكتب الحروف والأرقام المنطوقة بالضبط كما نُطقت بدون أي تخمين أو تثبيت على أمثلة سابقة.\n"
-            "2. كل لوحة سعودية تتكون من 3 حروف عربية مفصولة بمسافات يليهم 1 إلى 4 أرقام.\n"
+            "أنت خبير ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية من الصوت بدقة 100% بدون أي تفويت أو أخطاء.\n"
+            "المطلوب منك بدقة بالغة:\n"
+            "1. استمع بدقة للتسجيل الصوتي بالكامل من أول ثانية حتى آخر ثانية واستخرج جميع اللوحات المذكورة بدون استثناء أو اختصار.\n"
+            "2. كل لوحة سعودية تتكون من 3 حروف عربية مفصولة بمسافات يليهم 1 إلى 4 أرقام (مثال: 'د ب أ 9075' أو 'د و ك 3759' أو 'ح ب س 9500' أو 'ر ك ع 7511').\n"
             "3. تحويل أسماء الحروف العربية المنطوقة (دال، باء، ألف، واو، كاف، راء، عين، سين، ميم، نون، جيم، حاء، خاء، طاء، صاد، قاف...) إلى الحرف المقابل مفصولاً بمسافات.\n"
-            "   (أمثلة للتنسيق: 'د ب أ 9075' أو 'د و ك 3759' أو 'ح ب س 9500' أو 'ر ك ع 7511').\n"
-            "4. تحويل كافة الأرقام والكلمات العددية المنطوقة إلى أرقام (0-9).\n"
-            "5. إذا ذُكرت عدة لوحات في التسجيل، استخرجها جميعاً في المصفوفة بالترتيب.\n"
-            "6. استخرج نوع السيارة والملاحظات إن وُجدت في الصوت.\n"
-            "7. الإخراج المطلوب: يجب إرجاع النتيجة بصيغة مصفوفة JSON فقط بالشكل التالي:\n"
+            "4. ⚠️ دقة التمييز بين حرف الكاف (ك) وحرف القاف (ق):\n"
+            "   - حرف الكاف (ك): ينطق كاف / كـ / صوت K واضح، يكتب دائماً (ك).\n"
+            "   - حرف القاف (ق): ينطق قاف / قـ / أو بصوت (G / گ) في اللهجة الخليجية والسعودية، يكتب دائماً (ق) وليس (ك).\n"
+            "   - لا تخلط أبداً بين الكاف والقاف ودقق في صوت الحرف.\n"
+            "5. ⚠️ قاعدة التصحيح والتعديل الصوتي (Voice Corrections):\n"
+            "   - إذا نطق المتحدث لوحة معينة ثم قال بعدها كلمة تصحيح (مثل: 'تعديل'، 'قصدي'، 'أقصد'، 'لا'، 'معليش'، 'مسح'، 'بدل'):\n"
+            "   - يجب فوراً استبدال اللوحة السابقة باللوحة الجديدة المصححة فقط، وتجاهل وحذف اللوحة الخاطئة الأولى من المصفوفة تماماً حتى لا تتكرر.\n"
+            "6. تحويل كافة الأرقام والكلمات العددية المنطوقة إلى أرقام إنجليزية (0-9).\n"
+            "7. استخرج نوع السيارة والملاحظات إن وُجدت في الصوت.\n"
+            "8. الإخراج المطلوب: يجب إرجاع النتيجة بصيغة مصفوفة JSON فقط بالشكل التالي:\n"
             '[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا", "notes": ""}]\n'
             "إذا لم تسمع أي لوحة في التسجيل، أرجع مصفوفة فارغة: []"
         )
@@ -1054,7 +1067,8 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
             }],
             "generationConfig": {
                 "response_mime_type": "application/json",
-                "temperature": 0.0
+                "temperature": 0.0,
+                "max_output_tokens": 65536
             }
         }
         res_json = _call_gemini_with_rotation(cfg, payload, model_name, kind=kind)
@@ -1071,7 +1085,7 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
         if isinstance(plates, dict):
             plates = [plates]
         if isinstance(plates, list) and plates:
-            print(f"[Gemini Audio Parser OK] Extracted: {plates}")
+            print(f"[Gemini Audio Parser OK] Extracted: {len(plates)} plates")
             return plates
     except Exception as gem_err:
         print(f"[Gemini Transcribe Error] {gem_err} -> Falling back to Groq Whisper")
@@ -1080,7 +1094,7 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
     try:
         groq_plates = _call_groq_whisper(cfg, audio_data)
         if groq_plates:
-            print(f"[Groq Fallback OK] Extracted: {groq_plates}")
+            print(f"[Groq Fallback OK] Extracted: {len(groq_plates)} plates")
             return groq_plates
     except Exception as ge:
         print(f"[Dual-Engine Groq error] {ge}")
