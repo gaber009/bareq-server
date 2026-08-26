@@ -437,97 +437,57 @@ async function omRunMatch() {
         return;
     }
     
-    omShowStatus('proc', '⏳ جاري قراءة البيانات وإجراء المطابقة الدقيقة بين الملفين...', true);
+    omShowStatus('proc', '⚡ جاري الفحص والمطابقة السريعة عبر السيرفر...', true);
     
     try {
-        // 1. Fetch rows from Large File
-        const fdLarge = new FormData();
-        fdLarge.append('file', omLargeFile);
-        fdLarge.append('large_file', omLargeFile);
+        const fd = new FormData();
+        fd.append('large_file', omLargeFile);
+        if (omSmallFile) fd.append('small_file', omSmallFile);
+        if (txtPlates) fd.append('plates_text', txtPlates);
+        
+        const largeCol = (document.getElementById('omLargeCol') ? document.getElementById('omLargeCol').value : '').trim();
+        const smallCol = (document.getElementById('omSmallCol') ? document.getElementById('omSmallCol').value : '').trim();
+        if (largeCol) fd.append('large_col', largeCol);
+        if (smallCol) fd.append('small_col', smallCol);
+        
         const largePw = (document.getElementById('omLargePw') ? document.getElementById('omLargePw').value : '').trim();
-        if (largePw) fdLarge.append('password', largePw);
-        const resLarge = await fetch('/api/parse-gps-excel', {method: 'POST', body: fdLarge});
-        const dataLarge = await resLarge.json();
-        const largeRows = dataLarge.rows || [];
-        const largeHeaders = dataLarge.headers || omLargeHeaders;
+        const smallPw = (document.getElementById('omSmallPw') ? document.getElementById('omSmallPw').value : '').trim();
+        if (largePw) fd.append('large_pw', largePw);
+        if (smallPw) fd.append('small_pw', smallPw);
         
-        if (!largeRows.length) {
-            omShowStatus('err', 'الملف الكبير فارغ أو تعذر قراءة الصفوف منه.');
-            return;
+        const myLat = parseFloat(document.getElementById('omGpsMyLat') ? document.getElementById('omGpsMyLat').value : 0) || 24.7136;
+        const myLon = parseFloat(document.getElementById('omGpsMyLon') ? document.getElementById('omGpsMyLon').value : 0) || 46.6753;
+        fd.append('my_lat', myLat);
+        fd.append('my_lon', myLon);
+        
+        const res = await fetch('/api/fast-match', {method: 'POST', body: fd});
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || 'فشلت عملية المطابقة');
         }
         
-        // Find Large Plate Column Name
-        let largePlateCol = (document.getElementById('omLargeCol') ? document.getElementById('omLargeCol').value : '') || 'رقم اللوحة';
-        if (!largeRows[0].hasOwnProperty(largePlateCol)) {
-            const foundK = Object.keys(largeRows[0]).find(k => k.includes('لوح') || k.includes('لوحة') || k.toLowerCase().includes('plate'));
-            if (foundK) largePlateCol = foundK;
-            else largePlateCol = Object.keys(largeRows[0])[0];
-        }
-        
-        // 2. Fetch or parse Small Plates
-        let searchPlatesList = [];
-        if (txtPlates) {
-            searchPlatesList = txtPlates.split(/[\\r\\n,]+/).map(s => s.trim()).filter(Boolean);
-        } else if (omSmallFile) {
-            const fdSmall = new FormData();
-            fdSmall.append('file', omSmallFile);
-            fdSmall.append('small_file', omSmallFile);
-            const smallPw = (document.getElementById('omSmallPw') ? document.getElementById('omSmallPw').value : '').trim();
-            if (smallPw) fdSmall.append('password', smallPw);
-            const resSmall = await fetch('/api/parse-gps-excel', {method: 'POST', body: fdSmall});
-            const dataSmall = await resSmall.json();
-            const smallRows = dataSmall.rows || [];
-            let smallPlateCol = (document.getElementById('omSmallCol') ? document.getElementById('omSmallCol').value : '') || 'رقم اللوحة';
-            if (smallRows.length && !smallRows[0].hasOwnProperty(smallPlateCol)) {
-                const foundK = Object.keys(smallRows[0]).find(k => k.includes('لوح') || k.includes('لوحة') || k.toLowerCase().includes('plate'));
-                if (foundK) smallPlateCol = foundK;
-                else smallPlateCol = Object.keys(smallRows[0])[0];
-            }
-            searchPlatesList = smallRows.map(r => String(r[smallPlateCol] || '').trim()).filter(Boolean);
-        }
-        
-        if (!searchPlatesList.length) {
-            omShowStatus('err', 'لم يتم العثور على أي لوحات في قائمة البحث.');
-            return;
-        }
-        
-        // 3. Build normalized map for search
-        const searchSet = new Set(searchPlatesList.map(p => normPlate(p)).filter(Boolean));
-        const matchedPlatesFound = new Set();
-        const matchedRows = [];
-        
-        // Check GPS column in large rows
-        let gpsColName = Object.keys(largeRows[0]).find(k => k.toLowerCase().includes('gps') || k.includes('موقع') || k.includes('احداثيات') || k.includes('إحداثيات')) || '';
-        
-        largeRows.forEach(row => {
-            const rowPlate = String(row[largePlateCol] || '').trim();
-            const normP = normPlate(rowPlate);
-            if (normP && searchSet.has(normP)) {
-                matchedPlatesFound.add(normP);
-                matchedRows.push(row);
-            }
-        });
+        const data = await res.json();
+        const matchedRows = data.matched_rows || [];
+        const largeHeaders = data.headers || [];
+        const gpsColName = data.gps_col || '';
         
         omMatchedRowsData = matchedRows;
+        omGpsSortedData = data.gps_results || [];
         
-        // 4. Update Stats Cards
-        const totalMatchedRows = matchedRows.length;
-        const totalMatchedUnique = matchedPlatesFound.size;
-        const totalUnmatched = Math.max(0, searchSet.size - totalMatchedUnique);
-        
+        // Update stats
         const mEl = document.getElementById('omRMatched');
         const pEl = document.getElementById('omRPlates');
         const uEl = document.getElementById('omRUnmatched');
-        if (mEl) mEl.textContent = totalMatchedRows;
-        if (pEl) pEl.textContent = totalMatchedUnique;
-        if (uEl) uEl.textContent = totalUnmatched;
+        if (mEl) mEl.textContent = data.matched_count || 0;
+        if (pEl) pEl.textContent = data.unique_matched_count || 0;
+        if (uEl) uEl.textContent = data.unmatched_count || 0;
         
         const rLCol = document.getElementById('omRLargeCol');
-        if (rLCol) rLCol.textContent = largePlateCol;
+        if (rLCol) rLCol.textContent = data.large_col || largeCol || 'رقم اللوحة';
         const rSCol = document.getElementById('omRSmallCol');
-        if (rSCol) rSCol.textContent = (document.getElementById('omSmallCol') ? document.getElementById('omSmallCol').value : '') || 'نصي';
+        if (rSCol) rSCol.textContent = data.small_col || smallCol || 'نصي';
         
-        // 5. Render Preview Table
+        // Render preview table
         const thead = document.getElementById('omMatchThead');
         const tbody = document.getElementById('omMatchTbody');
         const tableWrap = document.getElementById('omMatchTableWrap');
@@ -547,94 +507,51 @@ async function omRunMatch() {
             if (tableWrap) tableWrap.style.display = 'block';
         }
         
-        // 6. Show Result Box and enable download
+        // Render GPS stats & table if GPS results exist
+        if (data.gps_results && data.gps_results.length > 0) {
+            const succCount = data.gps_results.filter(s => s.dist < 99990).length;
+            const failCount = data.gps_results.length - succCount;
+            const nearest = succCount > 0 ? (data.gps_results[0].dist.toFixed(1) + ' km') : '—';
+            
+            const sEl = document.getElementById('omGpsRSucc');
+            const fEl = document.getElementById('omGpsRFail');
+            const nEl = document.getElementById('omGpsRNearest');
+            if (sEl) sEl.textContent = succCount;
+            if (fEl) fEl.textContent = failCount;
+            if (nEl) nEl.textContent = nearest;
+            
+            const gpsTbody = document.getElementById('omGpsResultTableBody');
+            const gpsWrap = document.getElementById('omGpsResultTableWrap');
+            if (gpsTbody) {
+                gpsTbody.innerHTML = data.gps_results.map((s, i) => `
+                    <tr>
+                        <td>${i+1}</td>
+                        <td style="font-weight:800;color:var(--text)">${s.plate}</td>
+                        <td><a href="https://www.google.com/maps?q=${encodeURIComponent(s.gps)}" target="_blank" style="color:var(--teal);font-weight:700;text-decoration:none">📍 خريطة</a></td>
+                        <td>${s.vehicle_type}</td>
+                        <td>${s.notes}</td>
+                        <td><strong style="color:var(--green)">${s.dist < 99990 ? s.dist.toFixed(2) : '—'}</strong></td>
+                        <td>${s.dist < 99990 ? s.duration + ' د' : '—'}</td>
+                        <td>${s.date}</td>
+                    </tr>
+                `).join('');
+                if (gpsWrap) gpsWrap.style.display = 'block';
+            }
+            const gpsSec = document.getElementById('omGpsMatchSection');
+            if (gpsSec) gpsSec.style.display = 'block';
+        }
+        
+        // Show result box & enable download
         const box = document.getElementById('omResultBox');
         if (box) box.style.display = 'block';
         const dlBtn = document.getElementById('omDlBtn');
         if (dlBtn) dlBtn.style.display = 'inline-block';
         
-        // 7. Perform GPS Sorting if GPS is present
-        if (gpsColName && matchedRows.length > 0) {
-            omProcessGpsSorting(matchedRows, gpsColName, largePlateCol);
-        }
-        
-        omShowStatus('ok', `🎉 تمت المطابقة بنجاح! وُجد ${totalMatchedRows} صف مطابق لـ ${totalMatchedUnique} لوحة.`);
+        omShowStatus('ok', `🎉 تمت المطابقة السريعة بنجاح! وُجد ${data.matched_count} صف مطابق لـ ${data.unique_matched_count} لوحة.`);
         box.scrollIntoView({behavior: 'smooth'});
     } catch(err) {
-        console.error("Match error:", err);
-        omShowStatus('err', 'حدث خطأ أثناء إجراء المطابقة: ' + err.message);
-    }
-}
-
-function omProcessGpsSorting(rows, gpsCol, plateCol){
-    let myLat = parseFloat(document.getElementById('omGpsMyLat') ? document.getElementById('omGpsMyLat').value : 0) || 24.7136;
-    let myLon = parseFloat(document.getElementById('omGpsMyLon') ? document.getElementById('omGpsMyLon').value : 0) || 46.6753;
-    
-    function haversine(lat1, lon1, lat2, lon2) {
-        const R = 6371; // km
-        const dLat = (lat2 - lat1) * Math.PI / 180;
-        const dLon = (lon2 - lon1) * Math.PI / 180;
-        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                  Math.sin(dLon/2) * Math.sin(dLon/2);
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    }
-    
-    const sorted = [];
-    rows.forEach(r => {
-        const gpsStr = String(r[gpsCol] || '').trim();
-        let dist = 99999;
-        let lat = 0, lon = 0;
-        if (gpsStr.includes(',')) {
-            const parts = gpsStr.split(',');
-            lat = parseFloat(parts[0]);
-            lon = parseFloat(parts[1]);
-            if (!isNaN(lat) && !isNaN(lon)) {
-                dist = haversine(myLat, myLon, lat, lon);
-            }
-        }
-        sorted.push({
-            plate: r[plateCol] || '',
-            gps: gpsStr,
-            vehicle_type: r['نوع السيارة'] || r['النوع'] || '',
-            notes: r['ملاحظات'] || '',
-            dist: dist,
-            duration: Math.round(dist / 40 * 60), // 40 km/h avg speed
-            date: r['تاريخ التسجيل'] || r['التاريخ'] || '',
-            raw: r
-        });
-    });
-    
-    sorted.sort((a, b) => a.dist - b.dist);
-    omGpsSortedData = sorted;
-    
-    const succCount = sorted.filter(s => s.dist < 99990).length;
-    const failCount = sorted.length - succCount;
-    const nearest = succCount > 0 ? (sorted[0].dist.toFixed(1) + ' km') : '—';
-    
-    const sEl = document.getElementById('omGpsRSucc');
-    const fEl = document.getElementById('omGpsRFail');
-    const nEl = document.getElementById('omGpsRNearest');
-    if (sEl) sEl.textContent = succCount;
-    if (fEl) fEl.textContent = failCount;
-    if (nEl) nEl.textContent = nearest;
-    
-    const gpsTbody = document.getElementById('omGpsResultTableBody');
-    const gpsWrap = document.getElementById('omGpsResultTableWrap');
-    if (gpsTbody) {
-        gpsTbody.innerHTML = sorted.map((s, i) => `
-            <tr>
-                <td>${i+1}</td>
-                <td style="font-weight:800;color:var(--text)">${s.plate}</td>
-                <td><a href="https://www.google.com/maps?q=${encodeURIComponent(s.gps)}" target="_blank" style="color:var(--teal);font-weight:700;text-decoration:none">📍 خريطة</a></td>
-                <td>${s.vehicle_type}</td>
-                <td>${s.notes}</td>
-                <td><strong style="color:var(--green)">${s.dist < 99990 ? s.dist.toFixed(2) : '—'}</strong></td>
-                <td>${s.dist < 99990 ? s.duration + ' د' : '—'}</td>
-                <td>${s.date}</td>
-            </tr>
-        `).join('');
-        if (gpsWrap) gpsWrap.style.display = 'block';
+        console.error("Fast match error:", err);
+        omShowStatus('err', 'حدث خطأ أثناء المطابقة: ' + err.message);
     }
 }
 
@@ -1376,6 +1293,200 @@ async def parse_gps_excel(request: Request):
         "rows": rows,
         "total_rows": len(rows)
     }
+
+def _norm_plate_str(s: str) -> str:
+    if not s:
+        return ""
+    s = str(s).strip().lower()
+    s = re.sub(r'[\s\u200b\u200c\u200d\ufeff\-_]+', '', s)
+    s = re.sub(r'[أإآٱ]', 'ا', s)
+    s = s.replace('ى', 'ي').replace('ة', 'ه')
+    return s
+
+@app.post("/api/fast-match")
+async def fast_match(request: Request):
+    try:
+        form = await request.form()
+        large_file = form.get("large_file") or form.get("large") or form.get("file")
+        small_file = form.get("small_file") or form.get("small")
+        plates_text = str(form.get("plates_text") or form.get("small_plates_text") or "").strip()
+        large_col = str(form.get("large_col") or "").strip()
+        small_col = str(form.get("small_col") or "").strip()
+        large_pw = str(form.get("large_pw") or form.get("password") or "").strip()
+        small_pw = str(form.get("small_pw") or "").strip()
+        
+        my_lat = float(form.get("my_lat") or 24.7136)
+        my_lon = float(form.get("my_lon") or 46.6753)
+
+        if not large_file:
+            raise HTTPException(status_code=400, detail="الملف الكبير مطلوب لإجراء الفحص")
+
+        # 1. Parse search plates
+        search_plates_list = []
+        if plates_text:
+            search_plates_list = [p.strip() for p in re.split(r'[\r\n,]+', plates_text) if p.strip()]
+        elif small_file:
+            small_bytes = await small_file.read()
+            s_headers, s_rows = _parse_any_excel_file(small_bytes, small_pw)
+            
+            # Find small plate col
+            target_scol = small_col
+            if not target_scol or (s_headers and target_scol not in s_headers):
+                for h in s_headers:
+                    if any(kw in h for kw in ["لوحة", "لوحه", "اللوحة", "plate", "Plate", "اللوح"]):
+                        target_scol = h
+                        break
+                if not target_scol and s_headers:
+                    target_scol = s_headers[0]
+            
+            for r in s_rows:
+                v = r.get(target_scol, "").strip()
+                if v:
+                    search_plates_list.append(v)
+
+        if not search_plates_list:
+            raise HTTPException(status_code=400, detail="لم يتم العثور على أي لوحات في قائمة البحث (الملف الصغير)")
+
+        search_set = {_norm_plate_str(p): p for p in search_plates_list if _norm_plate_str(p)}
+
+        # 2. Fast Streaming Match on Large File
+        large_bytes = await large_file.read()
+        bio = io.BytesIO(large_bytes)
+        
+        # Try msoffcrypto
+        try:
+            import msoffcrypto
+            office_file = msoffcrypto.OfficeFile(bio)
+            if office_file.is_encrypted():
+                decrypted = io.BytesIO()
+                office_file.load_key(password=large_pw if large_pw else "VelvetSweatshop")
+                office_file.decrypt(decrypted)
+                decrypted.seek(0)
+                bio = decrypted
+        except Exception:
+            bio.seek(0)
+
+        headers = []
+        matched_rows = []
+        matched_unique = set()
+        plate_idx = 0
+        gps_idx = -1
+        type_idx = -1
+        notes_idx = -1
+        date_idx = -1
+
+        try:
+            bio.seek(0)
+            wb = openpyxl.load_workbook(filename=bio, read_only=True, data_only=True)
+            sheet = wb.active or wb[wb.sheetnames[0]]
+            
+            for r in sheet.iter_rows(values_only=True):
+                if not r or not any(c is not None and str(c).strip() for c in r):
+                    continue
+                parsed = [str(c).strip() if c is not None else "" for c in r]
+                if not headers:
+                    headers = [h if h else f"عمود_{i+1}" for i, h in enumerate(parsed)]
+                    # Determine column indices
+                    if large_col and large_col in headers:
+                        plate_idx = headers.index(large_col)
+                    else:
+                        for idx, h in enumerate(headers):
+                            if any(kw in h for kw in ["لوحة", "لوحه", "اللوحة", "plate", "Plate", "اللوح"]):
+                                plate_idx = idx
+                                break
+                    for idx, h in enumerate(headers):
+                        if any(kw in h.lower() for kw in ["gps", "موقع", "احداثيات", "إحداثيات"]):
+                            gps_idx = idx
+                        elif any(kw in h for kw in ["نوع السيارة", "النوع", "طراز"]):
+                            type_idx = idx
+                        elif any(kw in h for kw in ["ملاحظات", "ملاحظة"]):
+                            notes_idx = idx
+                        elif any(kw in h for kw in ["تاريخ", "التاريخ"]):
+                            date_idx = idx
+                else:
+                    val = parsed[plate_idx] if plate_idx < len(parsed) else ""
+                    norm_v = _norm_plate_str(val)
+                    if norm_v in search_set:
+                        matched_unique.add(norm_v)
+                        row_dict = {headers[i] if i < len(headers) else f"عمود_{i+1}": parsed[i] for i in range(len(parsed))}
+                        matched_rows.append(row_dict)
+        except Exception as e:
+            # Fallback to _parse_any_excel_file
+            h_all, r_all = _parse_any_excel_file(large_bytes, large_pw)
+            headers = h_all
+            target_lcol = large_col
+            if not target_lcol or target_lcol not in headers:
+                for h in headers:
+                    if any(kw in h for kw in ["لوحة", "لوحه", "اللوحة", "plate", "Plate", "اللوح"]):
+                        target_lcol = h
+                        break
+                if not target_lcol and headers:
+                    target_lcol = headers[0]
+            for r in r_all:
+                val = r.get(target_lcol, "").strip()
+                norm_v = _norm_plate_str(val)
+                if norm_v in search_set:
+                    matched_unique.add(norm_v)
+                    matched_rows.append(r)
+
+        # 3. GPS distance calculations on matched rows
+        gps_col_name = headers[gps_idx] if (gps_idx >= 0 and gps_idx < len(headers)) else None
+        if not gps_col_name:
+            for h in headers:
+                if any(kw in h.lower() for kw in ["gps", "موقع", "احداثيات", "إحداثيات"]):
+                    gps_col_name = h
+                    break
+        
+        gps_results = []
+        if gps_col_name and matched_rows:
+            def _haversine(lat1, lon1, lat2, lon2):
+                R = 6371.0
+                dlat = math.radians(lat2 - lat1)
+                dlon = math.radians(lon2 - lon1)
+                a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+                return 2 * R * math.asin(math.sqrt(a))
+            
+            plate_name = headers[plate_idx] if (plate_idx >= 0 and plate_idx < len(headers)) else "رقم اللوحة"
+            for r in matched_rows:
+                gps_str = str(r.get(gps_col_name, "")).strip()
+                dist = 99999.0
+                if "," in gps_str:
+                    try:
+                        p_lat, p_lon = [float(x.strip()) for x in gps_str.split(",")[:2]]
+                        dist = _haversine(my_lat, my_lon, p_lat, p_lon)
+                    except Exception:
+                        pass
+                gps_results.append({
+                    "plate": r.get(plate_name, ""),
+                    "gps": gps_str,
+                    "vehicle_type": r.get(headers[type_idx] if (type_idx >= 0 and type_idx < len(headers)) else "نوع السيارة", ""),
+                    "notes": r.get(headers[notes_idx] if (notes_idx >= 0 and notes_idx < len(headers)) else "ملاحظات", ""),
+                    "dist": round(dist, 2) if dist < 99990 else 99999,
+                    "duration": int(round(dist / 40.0 * 60.0)) if dist < 99990 else 0,
+                    "date": r.get(headers[date_idx] if (date_idx >= 0 and date_idx < len(headers)) else "تاريخ التسجيل", ""),
+                    "raw": r
+                })
+            gps_results.sort(key=lambda x: x["dist"])
+
+        unmatched_count = max(0, len(search_set) - len(matched_unique))
+
+        return {
+            "status": "ok",
+            "headers": headers,
+            "matched_rows": matched_rows,
+            "matched_count": len(matched_rows),
+            "unique_matched_count": len(matched_unique),
+            "unmatched_count": unmatched_count,
+            "gps_col": gps_col_name or "",
+            "gps_results": gps_results,
+            "large_col": headers[plate_idx] if (plate_idx >= 0 and plate_idx < len(headers)) else large_col,
+            "small_col": small_col
+        }
+    except HTTPException:
+        raise
+    except Exception as ge:
+        print("fast_match error:", ge)
+        raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء المطابقة: {ge}")
 
 @app.post("/api/parse-export-append")
 async def parse_export_append(request: Request):
