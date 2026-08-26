@@ -2329,15 +2329,22 @@ async def get_key_pools():
         for i, k in enumerate(keys_list):
             short = k[:8] + "..." + k[-4:] if len(k) > 14 else k
             result.append({
-                "id": i+1,
+                "id": str(i+1),
                 "name": f"{kind} مفتاح {i+1}",
                 "short": short,
+                "masked": short,
+                "label": f"مفتاح {i+1}",
                 "status": "active",
-                "key": k
+                "key": k,
+                "value": k
             })
         return result
 
     return {
+        "redis": True,
+        "gemini_live_key_source": "redis",
+        "gemini_rest_key_source": "redis",
+        "gemini_vertex_primary": "1",
         "gemini_rest":  make_pool(cfg.get("gemini_rest_keys", []), "REST"),
         "gemini_live":  make_pool(cfg.get("gemini_live_keys", []), "Live"),
         "groq":         make_pool(cfg.get("groq_keys", []), "Groq Whisper Turbo"),
@@ -2349,8 +2356,8 @@ async def get_key_pools():
 @app.post("/admin/provider/key-pools/{kind}/keys")
 async def add_key_pool(kind: str, req: Request):
     data = await req.json()
-    key = data.get("key", "").strip()
-    name = data.get("name", "").strip()
+    key = str(data.get("value") or data.get("key") or data.get("api_key") or "").strip()
+    label = str(data.get("label") or data.get("name") or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="المفتاح فارغ")
     
@@ -2388,9 +2395,8 @@ async def add_key_pool(kind: str, req: Request):
     
     return {"status": "ok", "message": f"تم إضافة المفتاح بنجاح ({kind})"}
 
-@app.delete("/admin/provider/key-pools/{kind}/{key_id}")
-@app.delete("/admin/provider/key-pools/{kind}/keys/{key_id}")
-async def delete_key_pool(kind: str, key_id: int):
+@app.get("/admin/provider/key-pools/{kind}/keys/{key_id}/secret")
+async def get_key_pool_secret(kind: str, key_id: str):
     cfg = load_config()
     map_kind = {
         "gemini_rest":  "gemini_rest_keys",
@@ -2402,15 +2408,54 @@ async def delete_key_pool(kind: str, key_id: int):
     field = map_kind.get(kind)
     if field and field in cfg:
         keys = cfg[field]
-        if 0 < key_id <= len(keys):
-            keys.pop(key_id - 1)
+        try:
+            idx = int(key_id) - 1
+            if 0 <= idx < len(keys):
+                return {"value": keys[idx]}
+        except Exception:
+            for k in keys:
+                if key_id in k or k == key_id:
+                    return {"value": k}
+    return {"value": ""}
+
+@app.delete("/admin/provider/key-pools/{kind}/{key_id}")
+@app.delete("/admin/provider/key-pools/{kind}/keys/{key_id}")
+async def delete_key_pool(kind: str, key_id: str):
+    cfg = load_config()
+    map_kind = {
+        "gemini_rest":  "gemini_rest_keys",
+        "gemini_live":  "gemini_live_keys",
+        "groq":         "groq_keys",
+        "ors":          "ors_keys",
+        "gmaps":        "gmaps_keys",
+    }
+    field = map_kind.get(kind)
+    if field and field in cfg:
+        keys = cfg[field]
+        try:
+            idx = int(key_id) - 1
+            if 0 <= idx < len(keys):
+                keys.pop(idx)
+                cfg[field] = keys
+                save_config(cfg)
+                return {"status": "ok"}
+        except Exception:
+            pass
+        # Fallback delete by value match
+        if key_id in keys:
+            keys.remove(key_id)
             cfg[field] = keys
             save_config(cfg)
+            return {"status": "ok"}
     return {"status": "ok"}
+
+@app.post("/admin/provider/key-pools/{kind}/keys/{key_id}/unpark")
+async def unpark_key_pool(kind: str, key_id: str):
+    return {"status": "ok", "message": "تم إرجاع المفتاح للدوران"}
 
 @app.patch("/admin/provider/key-pools/{kind}/keys/{key_id}")
 @app.put("/admin/provider/key-pools/{kind}/keys/{key_id}")
-async def update_key_pool_status(kind: str, key_id: int, req: Request):
+async def update_key_pool_status(kind: str, key_id: str, req: Request):
     return {"status": "ok", "message": "تم تحديث المفتاح"}
 
 @app.get("/admin/provider/gemini-pricing")
