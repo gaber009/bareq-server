@@ -249,6 +249,9 @@ async function omOnCheckFileChange(file, type) {
             omShowStatus('proc', '⏳ جاري فحص واستخراج أعمدة الملف الكبير...', true);
             const fd = new FormData();
             fd.append('large_file', file);
+            fd.append('file', file);
+            const pw = (document.getElementById('omLargePw')?.value || '').trim();
+            if (pw) fd.append('password', pw);
             try {
                 const res = await fetch('/api/check-headers', {method: 'POST', body: fd});
                 const data = await res.json();
@@ -285,7 +288,7 @@ async function omOnCheckFileChange(file, type) {
                 const gpsSec = document.getElementById('omGpsMatchSection');
                 if (gpsSec) gpsSec.style.display = hasGps ? 'block' : 'none';
                 
-                omShowStatus('ok', `✅ تم تجهيز الملف الكبير (${headers.length} عمود، عمود اللوحة: ${plateCol})`, false);
+                omShowStatus('ok', `✅ تم تجهيز الملف الكبير (${headers.length} عمود، عمود اللوحة: ${plateCol || '—'})`, false);
             } catch(e) {
                 omShowStatus('err', 'تعذر قراءة أعمدة الملف الكبير', false);
             }
@@ -301,6 +304,9 @@ async function omOnCheckFileChange(file, type) {
             omShowStatus('proc', '⏳ جاري فحص واستخراج أعمدة ملف الإحالة...', true);
             const fd = new FormData();
             fd.append('file', file);
+            fd.append('small_file', file);
+            const pw = (document.getElementById('omSmallPw')?.value || '').trim();
+            if (pw) fd.append('password', pw);
             try {
                 const res = await fetch('/api/check-headers', {method: 'POST', body: fd});
                 const data = await res.json();
@@ -1173,35 +1179,66 @@ async def get_debug_wav():
 
 @app.post("/api/check-headers")
 async def check_headers(request: Request):
-    headers = ["رقم اللوحة", "نوع السيارة", "ملاحظات", "GPS", "الحي", "الشارع"]
+    headers = []
     detected_col = ""
     try:
         form = await request.form()
         file = form.get("large_file") or form.get("file") or form.get("large") or form.get("small_file") or form.get("small")
+        pw = form.get("password") or form.get("largePw") or form.get("smallPw") or ""
         if file:
             content = await file.read()
-            # Try openpyxl for xlsx/xlsm
+            
+            # 1. Decrypt if password protected
+            bio = io.BytesIO(content)
             try:
-                wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
+                import msoffcrypto
+                office_file = msoffcrypto.OfficeFile(bio)
+                if office_file.is_encrypted():
+                    decrypted = io.BytesIO()
+                    office_file.load_key(password=str(pw).strip() if pw else "VelvetSweatshop")
+                    office_file.decrypt(decrypted)
+                    decrypted.seek(0)
+                    bio = decrypted
+            except Exception:
+                bio.seek(0)
+            
+            # 2. Try openpyxl with read_only=True (fast, lightweight memory for huge files)
+            try:
+                bio.seek(0)
+                wb = openpyxl.load_workbook(filename=bio, read_only=True, data_only=True)
                 sheet = wb.active
                 for row in sheet.iter_rows(values_only=True):
                     parsed = [str(c).strip() for c in row if c is not None and str(c).strip()]
-                    if parsed and len(parsed) >= 1:
+                    if len(parsed) >= 2 or (len(parsed) == 1 and any(kw in parsed[0] for kw in ['لوحة', 'لوحه', 'اللوحة', 'plate', 'Plate', 'رقم'])):
                         headers = parsed
                         break
-            except Exception as xe:
-                # Try CSV or fallback
-                import csv
+            except Exception:
+                # 3. Fallback to normal openpyxl
                 try:
-                    text_str = content.decode("utf-8-sig", errors="ignore")
-                    reader = csv.reader(io.StringIO(text_str))
-                    for r in reader:
-                        parsed = [c.strip() for c in r if c.strip()]
-                        if parsed:
+                    bio.seek(0)
+                    wb = openpyxl.load_workbook(filename=bio, data_only=True)
+                    sheet = wb.active
+                    for row in sheet.iter_rows(values_only=True):
+                        parsed = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                        if len(parsed) >= 2 or (len(parsed) == 1 and any(kw in parsed[0] for kw in ['لوحة', 'لوحه', 'اللوحة', 'plate', 'Plate', 'رقم'])):
                             headers = parsed
                             break
                 except Exception:
-                    pass
+                    # 4. Fallback to CSV
+                    import csv
+                    try:
+                        text_str = content.decode("utf-8-sig", errors="ignore")
+                        reader = csv.reader(io.StringIO(text_str))
+                        for r in reader:
+                            parsed = [c.strip() for c in r if c.strip()]
+                            if len(parsed) >= 2 or (len(parsed) == 1 and any(kw in parsed[0] for kw in ['لوحة', 'لوحه', 'اللوحة', 'plate', 'Plate', 'رقم'])):
+                                headers = parsed
+                                break
+                    except Exception:
+                        pass
+
+        if not headers:
+            headers = ["رقم اللوحة", "نوع السيارة", "ملاحظات", "GPS", "الحي", "الشارع"]
 
         # Auto detect plate column
         for h in headers:
@@ -1241,14 +1278,13 @@ async def check_live_upload_excel(request: Request):
         if file:
             content = await file.read()
             try:
-                wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
+                wb = openpyxl.load_workbook(filename=io.BytesIO(content), read_only=True, data_only=True)
                 sheet = wb.active
-                rows = list(sheet.iter_rows(values_only=True))
-                if rows:
-                    parsed_h = [str(c).strip() for c in rows[0] if c is not None and str(c).strip()]
+                for r in sheet.iter_rows(values_only=True):
+                    parsed_h = [str(c).strip() for c in r if c is not None and str(c).strip()]
                     if parsed_h:
                         headers = parsed_h
-                    total_plates = max(0, len(rows) - 1)
+                        break
             except Exception:
                 pass
                 
@@ -1279,22 +1315,43 @@ async def check_live_upload_excel(request: Request):
 
 @app.post("/api/parse-gps-excel")
 async def parse_gps_excel(request: Request):
-    headers = ["GPS", "رقم اللوحة", "نوع السيارة", "تاريخ التسجيل", "ملاحظات", "موقع الشارع"]
+    headers = []
     rows = []
     try:
         form = await request.form()
         file = form.get("file") or form.get("large_file") or form.get("small_file") or form.get("large") or form.get("small")
+        pw = form.get("password") or form.get("largePw") or form.get("smallPw") or ""
         if file:
             content = await file.read()
+            
+            # Decrypt if password protected
+            bio = io.BytesIO(content)
             try:
-                wb = openpyxl.load_workbook(filename=io.BytesIO(content), data_only=True)
+                import msoffcrypto
+                office_file = msoffcrypto.OfficeFile(bio)
+                if office_file.is_encrypted():
+                    decrypted = io.BytesIO()
+                    office_file.load_key(password=str(pw).strip() if pw else "VelvetSweatshop")
+                    office_file.decrypt(decrypted)
+                    decrypted.seek(0)
+                    bio = decrypted
+            except Exception:
+                bio.seek(0)
+            
+            # Try openpyxl with read_only=True
+            try:
+                bio.seek(0)
+                wb = openpyxl.load_workbook(filename=bio, read_only=True, data_only=True)
                 sheet = wb.active
-                all_rows = list(sheet.iter_rows(values_only=True))
-                if all_rows:
-                    header_row = [str(cell).strip() if cell is not None else "" for cell in all_rows[0]]
-                    if any(header_row):
-                        headers = [h for h in header_row if h]
-                    for r in all_rows[1:]:
+                header_found = False
+                for r in sheet.iter_rows(values_only=True):
+                    if not header_found:
+                        parsed = [str(c).strip() if c is not None else "" for c in r]
+                        non_empty = [c for c in parsed if c]
+                        if len(non_empty) >= 2 or (len(non_empty) == 1 and any(kw in non_empty[0] for kw in ['لوحة', 'لوحه', 'اللوحة', 'plate', 'Plate', 'رقم'])):
+                            headers = [h if h else f"Col_{i+1}" for i, h in enumerate(parsed)]
+                            header_found = True
+                    else:
                         if not any(r):
                             continue
                         row_dict = {}
@@ -1303,24 +1360,46 @@ async def parse_gps_excel(request: Request):
                             row_dict[col_name] = str(val).strip() if val is not None else ""
                         rows.append(row_dict)
             except Exception:
-                # CSV Fallback
-                import csv
+                # Fallback to normal openpyxl
                 try:
-                    text_str = content.decode("utf-8-sig", errors="ignore")
-                    reader = csv.reader(io.StringIO(text_str))
-                    all_lines = list(reader)
-                    if all_lines:
-                        headers = [h.strip() for h in all_lines[0] if h.strip()]
-                        for r in all_lines[1:]:
+                    bio.seek(0)
+                    wb = openpyxl.load_workbook(filename=bio, data_only=True)
+                    sheet = wb.active
+                    header_found = False
+                    for r in sheet.iter_rows(values_only=True):
+                        if not header_found:
+                            parsed = [str(c).strip() if c is not None else "" for c in r]
+                            non_empty = [c for c in parsed if c]
+                            if len(non_empty) >= 2 or (len(non_empty) == 1 and any(kw in non_empty[0] for kw in ['لوحة', 'لوحه', 'اللوحة', 'plate', 'Plate', 'رقم'])):
+                                headers = [h if h else f"Col_{i+1}" for i, h in enumerate(parsed)]
+                                header_found = True
+                        else:
                             if not any(r):
                                 continue
                             row_dict = {}
                             for idx, val in enumerate(r):
                                 col_name = headers[idx] if idx < len(headers) else f"Column_{idx+1}"
-                                row_dict[col_name] = val.strip() if val else ""
+                                row_dict[col_name] = str(val).strip() if val is not None else ""
                             rows.append(row_dict)
-                except Exception as ce:
-                    print("CSV fallback parse error:", ce)
+                except Exception:
+                    # Fallback to CSV
+                    import csv
+                    try:
+                        text_str = content.decode("utf-8-sig", errors="ignore")
+                        reader = csv.reader(io.StringIO(text_str))
+                        all_lines = list(reader)
+                        if all_lines:
+                            headers = [h.strip() for h in all_lines[0] if h.strip()]
+                            for r in all_lines[1:]:
+                                if not any(r):
+                                    continue
+                                row_dict = {}
+                                for idx, val in enumerate(r):
+                                    col_name = headers[idx] if idx < len(headers) else f"Column_{idx+1}"
+                                    row_dict[col_name] = val.strip() if val else ""
+                                rows.append(row_dict)
+                    except Exception as ce:
+                        print("CSV fallback parse error:", ce)
     except Exception as e:
         print("Excel parsing exception:", e)
             
