@@ -105,7 +105,7 @@ default_config = {
     "openai_api_key": _FB_OPENAI,
     "gmaps_api_key": "AIzaSyD6MFjNe3_C0AZygsdKj3loxzw77IxTssQ",
     "ors_api_key": "",
-    "gemini_model": "gemini-2.0-flash",
+    "gemini_model": "gemini-flash-lite-latest",
     "app_name": "برق - License Plate Extractor",
     "admin_username": "admin",
     "admin_password": "123"
@@ -726,9 +726,9 @@ async def update_config(req: Request):
 async def get_gemini_models_public(channel: str = "rest"):
     return {
         "models": [
-            {"model_id": "gemini-flash-latest", "label": "Gemini Flash (أحدث إصدار - سريع)"},
-            {"model_id": "gemini-3.6-flash", "label": "Gemini 3.6 Flash (عالي الدقة)"},
-            {"model_id": "gemini-1.5-flash", "label": "Gemini 1.5 Flash (افتراضي)"}
+            {"model_id": "gemini-flash-lite-latest", "label": "Gemini Flash Lite (المحرك الأصلي - فائق الدقة والسرعة)"},
+            {"model_id": "gemini-flash-latest", "label": "Gemini Flash Latest"},
+            {"model_id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"}
         ]
     }
 
@@ -947,7 +947,7 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
                             "contents": [{"parts": [{"text": text_prompt}]}],
                             "generationConfig": {"response_mime_type": "application/json", "temperature": 0.0}
                         }
-                        res_json = _call_gemini_with_rotation(cfg, payload, "gemini-3.6-flash", kind="rest")
+                        res_json = _call_gemini_with_rotation(cfg, payload, "gemini-flash-lite-latest", kind="rest")
                         raw_t = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
                         if raw_t.startswith("```json"): raw_t = raw_t[7:]
                         if raw_t.startswith("```"): raw_t = raw_t[3:]
@@ -1030,11 +1030,10 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
     """Call Gemini API with automatic key AND verified model rotation on 429/503/404."""
     import time
     FALLBACK_MODELS = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
+        "gemini-flash-lite-latest",
         "gemini-flash-latest",
-        "gemini-1.5-flash-8b",
-        "gemini-2.0-flash-lite",
+        "gemini-2.5-flash",
+        "gemma-4-31b-it",
     ]
 
     pool_field = "gemini_rest_keys" if kind == "rest" else "gemini_live_keys"
@@ -1176,10 +1175,11 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
         plates = json.loads(clean_text)
         if isinstance(plates, dict):
             plates = [plates]
-        if isinstance(plates, list) and plates:
+        if isinstance(plates, list):
             plates = _dedup_plates(plates)
             print(f"[Gemini Audio Parser OK] Extracted: {len(plates)} plates")
             return plates
+        return []
     except Exception as gem_err:
         print(f"[Gemini Transcribe Error] {gem_err} -> Falling back to Groq Whisper")
 
@@ -1225,7 +1225,7 @@ async def process_audio(request: Request):
     try:
         form = await request.form()
         audio_file = form.get("audio")
-        model_name = str(form.get("model_name") or cfg.get("gemini_model", "gemini-3.6-flash"))
+        model_name = str(form.get("model_name") or cfg.get("gemini_model", "gemini-flash-lite-latest"))
         recorder_name = str(form.get("recorder_name") or "")
         district = str(form.get("district_default") or "")
         gps_data_raw = form.get("gps_data")
@@ -2279,7 +2279,7 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                                 api_attempted = True
                                 try:
                                     used_engine = "cloud_asr"
-                                    model_name = cfg.get("gemini_model", "gemini-2.0-flash")
+                                    model_name = cfg.get("gemini_model", "gemini-flash-lite-latest")
                                     plates = await asyncio.to_thread(_transcribe_dual_engine, cfg, b_wav, model_name, "live")
                                     if plates:
                                         p0 = plates[0]
