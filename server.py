@@ -2016,6 +2016,25 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
     decoder = _get_plate_decoder() if (_DECODER_AVAILABLE and _get_plate_decoder) else None
     partial_in_flight = False
 
+    # Reference plate index for live lookup (populated from uploaded Excel)
+    ref_plate_set: dict = {}   # norm_key -> original plate string
+
+    def _norm_ws_plate(s: str) -> str:
+        """Normalise a plate string for lookup comparison"""
+        if not s: return ""
+        s = str(s).strip()
+        s = re.sub(r'[\s\u200b\u200c\u200d\ufeff\-_]+', '', s)
+        s = re.sub(r'[أإآٱا]', 'أ', s)
+        s = s.replace('ى', 'ي').replace('ة', 'ه').replace('هـ', 'ه')
+        return s.lower()
+
+    def _lookup_plate(plate: str) -> bool:
+        """Return True if plate is in the reference set"""
+        if not ref_plate_set:
+            return True   # No Excel loaded → treat all as found (don't block)
+        return _norm_ws_plate(plate) in ref_plate_set
+
+
     def pcm16_to_wav(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
         import wave
         buf = io.BytesIO()
@@ -2075,6 +2094,53 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
 
                     elif mtype == "ping":
                         await websocket.send_json({"type": "pong"})
+
+                    elif mtype == "excel_upload_ref":
+                        # Client sends upload_token pointing to an already-uploaded file
+                        upload_token = data.get("upload_token", "")
+                        plate_col = data.get("plate_column", data.get("column", ""))
+                        pw = data.get("password", "")
+                        try:
+                            upload_path = os.path.join(BASE_DIR, "uploads", f"{upload_token}.xlsx")
+                            if not os.path.exists(upload_path):
+                                upload_path = os.path.join(BASE_DIR, "uploads", f"{upload_token}.xls")
+                            if os.path.exists(upload_path):
+                                with open(upload_path, "rb") as fh:
+                                    content_bytes = fh.read()
+                                h_list, r_list = _parse_any_excel_file(content_bytes, str(pw))
+                                # Auto-detect plate column
+                                if not plate_col:
+                                    for h in h_list:
+                                        if any(kw in h for kw in ["لوحة", "لوحه", "اللوحة", "plate", "Plate"]):
+                                            plate_col = h
+                                            break
+                                if not plate_col and h_list:
+                                    plate_col = h_list[0]
+                                ref_plate_set.clear()
+                                for row in r_list:
+                                    v = str(row.get(plate_col, "")).strip()
+                                    if v:
+                                        ref_plate_set[_norm_ws_plate(v)] = v
+                                print(f"[WS] Loaded {len(ref_plate_set)} ref plates from upload_token={upload_token}")
+                                await websocket.send_json({
+                                    "type": "excel_loaded",
+                                    "data": {"count": len(ref_plate_set), "column": plate_col}
+                                })
+                            else:
+                                print(f"[WS] Upload token not found: {upload_token}")
+                                await websocket.send_json({"type": "excel_loaded", "data": {"count": 0}})
+                        except Exception as ex_err:
+                            print(f"[WS] excel_upload_ref error: {ex_err}")
+                            await websocket.send_json({"type": "excel_loaded", "data": {"count": 0}})
+
+                    elif mtype == "set_plate_column":
+                        # Client already uploaded via HTTP, just sets the column name
+                        # Nothing to do since we already indexed — ack only
+                        col = data.get("column", "")
+                        await websocket.send_json({
+                            "type": "plate_column_ready",
+                            "data": {"count": len(ref_plate_set), "column": col}
+                        })
 
                     elif mtype == "audio":
                         raw_b64 = data.get("data", "")
@@ -2252,17 +2318,26 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                             except Exception:
                                 pass
 
-                            # 3. Decision & Emission:
+                            # 3. Decision & Emission — emit ALL plates (with found status from Excel lookup)
                             try:
-                                # Save only if valid and confidence >= 0.4
-                                if plate_text and is_valid and confidence >= 0.4:
-                                    p_info = plates[0] if (plates and isinstance(plates, list)) else {}
+                                # Get all plates from the response (not just first)
+                                all_result_plates = plates if (plates and isinstance(plates, list)) else []
+                                if plate_text and not any(p.get("plate") == plate_text for p in all_result_plates):
+                                    # Decoded plate differs from raw — use decoded
+                                    all_result_plates = [{"plate": plate_text, "vehicle_type": "تويوتا", "notes": ""}]
+
+                                for p_info in all_result_plates:
+                                    pt = str(p_info.get("plate", "")).strip()
+                                    if not pt:
+                                        continue
+                                    # Real lookup against loaded Excel reference
+                                    is_found = _lookup_plate(pt)
                                     await websocket.send_json({
                                         "type": "plate_result",
                                         "data": {
-                                            "plate": plate_text,
-                                            "found": True,
-                                            "vehicle_type": p_info.get("vehicle_type", "تويوتا"),
+                                            "plate": pt,
+                                            "found": is_found,
+                                            "vehicle_type": p_info.get("vehicle_type", ""),
                                             "notes": p_info.get("notes", ""),
                                             "street_name": p_info.get("street_name", ""),
                                             "district_name": p_info.get("district_name", ""),
@@ -2273,20 +2348,14 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                                             "signals": signals
                                         }
                                     })
-                                    # Update transcript to show the final accepted plate
                                     await websocket.send_json({
                                         "type": "live_transcript",
-                                        "data": f"✔ {plate_text}",
+                                        "data": f"{'✔' if is_found else '—'} {pt}",
                                         "final": True
                                     })
-                                elif plate_text:
-                                    # Incomplete or low confidence — show in transcript, but DO NOT save
-                                    await websocket.send_json({
-                                        "type": "live_transcript",
-                                        "data": f"⚠️ غير مكتملة: {plate_text}",
-                                        "final": False
-                                    })
-                                else:
+                                    print(f"[WS] Emitted plate_result: {pt} found={is_found}")
+
+                                if not all_result_plates:
                                     await websocket.send_json({
                                         "type": "live_transcript",
                                         "data": f"لم يتم التعرف على لوحة (RAW: {raw_text or 'صمت'})",
@@ -2296,6 +2365,7 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                                 print(f"[WS] Client disconnected before emission: {send_err}")
 
                         asyncio.create_task(_process_end_of_turn(wav_data, audio_np, partial_history, len(all_pcm_bytes)))
+
 
                 except Exception as ex:
                     print(f"WS message error: {ex}")
