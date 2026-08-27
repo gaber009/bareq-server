@@ -2009,13 +2009,13 @@ tbody tr:hover {
           <span class="btn-lbl pin-cnt" id="pinCount">0 نقطة</span>
         </div>
       </div>
-      <input type="file" id="wavUploadInput" accept=".wav,audio/wav" hidden/>
+      <input type="file" id="wavUploadInput" accept=".wav,.mp3,.m4a,.ogg,.aac,.mp4,.mov,.webm,.avi,audio/*,video/*" hidden/>
       <div class="upload-zone wav-zone" id="wavDropZone" onclick="document.getElementById('wavUploadInput').click()"
            ondragover="event.preventDefault();this.classList.add('drag')"
            ondragleave="this.classList.remove('drag')"
            ondrop="event.preventDefault();this.classList.remove('drag');onWavFileSelected(event.dataTransfer.files[0])">
         <div class="icon">&#x1F4C1;</div>
-        <p><strong>رفع ملف WAV</strong> — اضغط أو اسحب الملف هنا<br><span style="font-size:.7rem;color:var(--dim)">صيغة .wav فقط · حد أقصى 30 ميجابايت</span></p>
+        <p><strong>رفع ملف صوتي أو فيديو</strong> — اضغط أو اسحب الملف هنا<br><span style="font-size:.7rem;color:var(--dim)">wav · mp3 · m4a · ogg · aac · mp4 · mov · webm · avi · حد أقصى 100 ميجابايت</span></p>
         <div class="file-name-row" id="wavFileRow" style="display:none">
           <span class="fname" id="wavFileName"></span>
         </div>
@@ -3207,7 +3207,7 @@ function deviceRecordingStamp(when){
   return y+'-'+mo+'-'+d+' '+time;
 }
 // ── Audio blob extension (تسجيل مباشر ورفع يدوي = WAV) ──
-const MAX_WAV_UPLOAD_BYTES=30*1024*1024;
+const MAX_WAV_UPLOAD_BYTES=100*1024*1024;
 function audioBlobExt(blob){
   const t=(blob&&blob.type)||'';
   const n=String((blob&&blob.name)||'').toLowerCase();
@@ -3303,12 +3303,14 @@ function getAudioDuration(url){
 async function onWavFileSelected(file){
   if(!file) return;
   const name=String(file.name||'').trim();
-  if(!name.toLowerCase().endsWith('.wav')){
-    showStatus('err','يُقبل فقط ملفات .wav');
+  const ext=name.toLowerCase().split('.').pop();
+  const ALLOWED_EXTS=['wav','mp3','m4a','ogg','aac','mp4','mov','webm','avi','wma','flac','opus','3gp','mkv'];
+  if(!ALLOWED_EXTS.includes(ext)){
+    showStatus('err','الصيغة غير مدعومة — المقبول: wav, mp3, m4a, ogg, aac, mp4, mov, webm, avi');
     return;
   }
   if(file.size>MAX_WAV_UPLOAD_BYTES){
-    showStatus('err','الملف أكبر من 30 ميجابايت');
+    showStatus('err','الملف أكبر من 100 ميجابايت');
     return;
   }
   const url=URL.createObjectURL(file);
@@ -4126,14 +4128,15 @@ function _appendPlatesWithDistrict(plates, when, gpsPoints){
   const list=Array.isArray(plates)?plates:[];
   const dn=_districtFromInput();
   const recName=(document.getElementById('recorderName')?document.getElementById('recorderName').value:'').trim();
-  const streetNameInp=(document.getElementById('streetName')?document.getElementById('streetName').value:'').trim();
-  
+
+  // Compute GPS from collected points (midpoint strategy)
   let midGps = '';
   if (Array.isArray(gpsPoints) && gpsPoints.length > 0) {
     const midIdx = Math.floor((gpsPoints.length - 1) / 2);
     const pt = gpsPoints[midIdx];
-    if (pt && pt.lat && pt.lon) {
-      midGps = `${Number(pt.lat).toFixed(6)},${Number(pt.lon).toFixed(6)}`;
+    if (pt && pt.lat && (pt.lng || pt.lon)) {
+      const ptLng = pt.lng || pt.lon;
+      midGps = `${Number(pt.lat).toFixed(6)},${Number(ptLng).toFixed(6)}`;
     } else if (typeof pt === 'string') {
       midGps = pt;
     }
@@ -4141,12 +4144,17 @@ function _appendPlatesWithDistrict(plates, when, gpsPoints){
 
   list.forEach(p=>{
     p.full_plate = p.full_plate || p.plate || '';
+    // district: use what Gemini found, fallback to input field
     p.district_name = (p.district_name || dn || '').trim();
-    p.street_name = (p.street_name || streetNameInp || '').trim();
+    // street_name: use what Gemini found (from voice), no fallback input needed
+    p.street_name = (p.street_name || '').trim();
+    // notes: use what Gemini found (from voice "ملاحظات...")
     p.notes = (p.notes || p.location_details || '').trim();
     p.vehicle_type = (p.vehicle_type || '').trim();
+    // GPS: use per-plate GPS if provided by server, else use midpoint from recording
     p.gps = (p.gps || midGps || '').trim();
-    p.street_location = (p.street_location || p.location_details || p.gps || midGps || '').trim();
+    // street_location: voice-extracted location description
+    p.street_location = (p.street_location || '').trim();
     p.recorder_name = (p.recorder_name || recName || '').trim();
     p.recording_date = p.recording_date || deviceRecordingStamp(when);
     tableRows.push(p);

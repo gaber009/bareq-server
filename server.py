@@ -861,7 +861,16 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
                 "model": "whisper-large-v3-turbo",
                 "language": "ar",
                 "temperature": "0.0",
-                "prompt": "تسجيل صوتي لتسميع وتفريغ أرقام وحروف لوحات المركبات السعودية: ألف باء تاء ثاء جيم حاء خاء دال ذال راء زين سين شين صاد ضاد طاء ظاء عين غين فاء قاف كاف لام ميم نون هاء واو ياء صفر واحد اثنين ثلاثة أربعة خمسة ستة سبعة ثمانية تسعة"
+                "prompt": (
+                    "تسجيل صوتي لتسميع لوحات سيارات سعودية. كل لوحة = 3 حروف + أرقام. "
+                    "مثال: دال باء ألف تسعة صفر سبعة خمسة = د ب أ 9075. "
+                    "تمييز مهم: كاف (ك) ≠ قاف (ق). "
+                    "كاف/كيف → ك. قاف/قيف/صوت G → ق. "
+                    "أمثلة: دال كاف هاء 3560، دال قاف هاء 8565. "
+                    "ألف باء تاء ثاء جيم حاء خاء دال ذال راء زين سين شين صاد ضاد طاء ظاء عين غين فاء قاف كاف لام ميم نون هاء واو ياء "
+                    "صفر واحد اثنين ثلاثة أربعة خمسة ستة سبعة ثمانية تسعة "
+                    "شارع طريق حي ملاحظات فاصل يمين يسار"
+                )
             }
             resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=12)
             if resp.status_code == 200:
@@ -962,6 +971,36 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
 
     raise Exception(last_err or "All Gemini models and keys exhausted")
 
+def _dedup_plates(plates: list) -> list:
+    """
+    Remove duplicate plates from the list.
+    Keeps the first occurrence with the most data (non-empty fields).
+    Normalization: strip spaces for comparison, but preserve original.
+    """
+    seen = {}
+    result = []
+    for p in plates:
+        if not isinstance(p, dict):
+            continue
+        raw = p.get("plate", "").strip()
+        # Normalize for comparison: collapse spaces
+        norm = re.sub(r'\s+', ' ', raw).strip()
+        if not norm:
+            result.append(p)
+            continue
+        if norm not in seen:
+            seen[norm] = len(result)
+            result.append(p)
+        else:
+            # If new entry has more data (more non-empty fields), replace the old one
+            existing_idx = seen[norm]
+            existing = result[existing_idx]
+            existing_score = sum(1 for v in existing.values() if v and str(v).strip())
+            new_score = sum(1 for v in p.values() if v and str(v).strip())
+            if new_score > existing_score:
+                result[existing_idx] = p
+    return result
+
 def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "live") -> list:
     """High-accuracy transcription: Gemini 3.6/3.5 native audio first, with Groq Whisper fallback"""
     # 1. Try Gemini Multimodal Audio (Best Arabic phonetic recognition for any spoken letters/numbers)
@@ -969,27 +1008,32 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
         mime_type, _ = _detect_audio_info(audio_data)
         b64_audio = base64.b64encode(audio_data).decode("utf-8")
         prompt = (
-            "أنت خبير ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية وبياناتها (الشارع، موقع الشارع، الحي، نوع السيارة، الملاحظات) من الصوت بدقة 100% بدون أي تفويت أو أخطاء.\n"
-            "المطلوب منك بدقة بالغة:\n"
-            "1. استمع بدقة للتسجيل الصوتي بالكامل من أول ثانية حتى آخر ثانية واستخرج جميع اللوحات المذكورة بدون استثناء أو اختصار.\n"
-            "2. كل لوحة سعودية تتكون من 3 حروف عربية مفصولة بمسافات يليهم 1 إلى 4 أرقام (مثال: 'د ب أ 9075' أو 'د و ك 3759' أو 'ح ب س 9500' أو 'ر ك ع 7511').\n"
-            "3. تحويل أسماء الحروف العربية المنطوقة (دال، باء، ألف، واو، كاف، راء، عين، سين، ميم، نون، جيم، حاء، خاء، طاء، صاد، قاف...) إلى الحرف المقابل مفصولاً بمسافات.\n"
-            "4. ⚠️ دقة التمييز بين حرف الكاف (ك) وحرف القاف (ق):\n"
-            "   - حرف الكاف (ك): ينطق كاف / كـ / صوت K واضح، يكتب دائماً (ك).\n"
-            "   - حرف القاف (ق): ينطق قاف / قـ / أو بصوت (G / گ) في اللهجة الخليجية والسعودية، يكتب دائماً (ق) وليس (ك).\n"
-            "   - لا تخلط أبداً بين الكاف والقاف ودقق في صوت الحرف.\n"
-            "5. ⚠️ قاعدة التصحيح والتعديل الصوتي (Voice Corrections):\n"
-            "   - إذا نطق المتحدث لوحة معينة ثم قال بعدها كلمة تصحيح (مثل: 'تعديل'، 'قصدي'، 'أقصد'، 'لا'، 'معليش'، 'مسح'، 'بدل'):\n"
-            "   - يجب فوراً استبدال اللوحة السابقة باللوحة الجديدة المصححة فقط، وتجاهل وحذف اللوحة الخاطئة الأولى من المصفوفة تماماً حتى لا تتكرر.\n"
-            "6. تحويل كافة الأرقام والكلمات العددية المنطوقة إلى أرقام إنجليزية (0-9).\n"
-            "7. استخراج كافة التفاصيل المنطوقة مع اللوحة بدقة:\n"
-            "   - vehicle_type: نوع السيارة وطرازها ولونها إن ذُكر (مثل: 'تويوتا كامري أبيض'، 'هيونداي النترا'، 'فورد تورس').\n"
-            "   - street_name: اسم الشارع أو الطريق إن ذُكر (مثل: 'طريق الملك فهد'، 'شارع العليا'، 'شارع الثلاثين').\n"
-            "   - street_location: موقع أو وصف السيارة في الشارع (مثل: 'يمين الشارع'، 'يسار الشارع'، 'أمام الصيدلية'، 'بجوار المسجد'، 'مواقف العمارة').\n"
-            "   - district_name: اسم الحي إن ذُكر (مثل: 'حي العليا'، 'حي الملقا'، 'حي النرجس').\n"
-            "   - notes: أي ملاحظات أخرى حول السيارة (مثل: 'سليمة'، 'مصدومة من الخلف'، 'مسحوبة'، 'بدون لوحة أمامية').\n"
-            "8. الإخراج المطلوب: يجب إرجاع النتيجة بصيغة مصفوفة JSON فقط بالشكل التالي:\n"
-            '[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا كامري", "street_name": "طريق الملك فهد", "street_location": "يمين الشارع", "district_name": "العليا", "notes": "سليمة"}]\n'
+            "أنت خبير ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية وبياناتها من الصوت بدقة 100%.\n"
+            "المطلوب منك:\n"
+            "1. استمع للتسجيل كاملاً واستخرج جميع اللوحات المذكورة بدون استثناء.\n"
+            "2. كل لوحة سعودية = 3 حروف عربية مفصولة بمسافات + 1 إلى 4 أرقام (مثال: 'د ب أ 9075').\n"
+            "3. تحويل أسماء الحروف المنطوقة إلى حروف مفردة (دال=د، باء=ب، ألف=أ، واو=و، كاف=ك، قاف=ق...).\n"
+            "4. ⚠️ التمييز الدقيق بين الكاف والقاف — هذا الأهم:\n"
+            "   - (كاف / كيف / كـ) → يُكتب (ك) دائماً\n"
+            "   - (قاف / قيف / قـ / صوت G أو گ في اللهجة السعودية والخليجية) → يُكتب (ق) دائماً\n"
+            "   - مثال: 'دال كاف هاء 3560' → 'د ك هـ 3560' وليس 'د ق هـ'\n"
+            "   - مثال: 'دال قاف هاء 3560' → 'د ق هـ 3560' وليس 'د ك هـ'\n"
+            "5. ⚠️ الأرقام المركبة: اسمع الأرقام كما تُنطق واكتبها كاملة:\n"
+            "   - 'ثلاثة ألفين ومائتين وخمسة وستين' = 3265\n"
+            "   - 'ثلاثة خمسة ستة صفر' = 3560\n"
+            "   - 'ثمانية خمسة ستة خمسة' = 8565\n"
+            "   - لا تخلط الأرقام مع الحروف في نفس الموضع\n"
+            "6. ⚠️ استخراج بيانات إضافية عند ذكرها:\n"
+            "   - إذا قال 'شارع كذا' أو 'طريق كذا' → اكتب اسم الشارع في street_name\n"
+            "   - إذا قال 'حي كذا' أو 'منطقة كذا' → اكتب اسم الحي في district_name\n"
+            "   - إذا قال 'ملاحظات:...' أو 'ملاحظة ...' أو 'فاصل ...' قبل أو بعد اللوحة → اكتب الملاحظات في notes\n"
+            "   - إذا قال موقع مثل 'يمين الشارع'، 'أمام الصيدلية'، 'مواقف'... → اكتب في street_location\n"
+            "   - إذا قال نوع السيارة (تويوتا، هيونداي...) → اكتب في vehicle_type\n"
+            "7. التصحيح الصوتي: إذا قال 'تعديل'/'قصدي'/'لا'/'معليش' بعد لوحة → احذف اللوحة السابقة واستبدلها بالجديدة.\n"
+            "8. الإخراج: مصفوفة JSON فقط بالشكل:\n"
+            '[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا كامري", '
+            '"street_name": "طريق الملك فهد", "street_location": "يمين الشارع", '
+            '"district_name": "العليا", "notes": "سليمة"}]\n'
             "إذا لم تسمع أي لوحة في التسجيل، أرجع مصفوفة فارغة: []"
         )
         payload = {
@@ -1019,6 +1063,7 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
         if isinstance(plates, dict):
             plates = [plates]
         if isinstance(plates, list) and plates:
+            plates = _dedup_plates(plates)
             print(f"[Gemini Audio Parser OK] Extracted: {len(plates)} plates")
             return plates
     except Exception as gem_err:
@@ -1028,6 +1073,7 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
     try:
         groq_plates = _call_groq_whisper(cfg, audio_data)
         if groq_plates:
+            groq_plates = _dedup_plates(groq_plates)
             print(f"[Groq Fallback OK] Extracted: {len(groq_plates)} plates")
             return groq_plates
     except Exception as ge:
@@ -1066,8 +1112,11 @@ async def process_audio(request: Request):
                 if isinstance(gps_list, list) and gps_list:
                     mid_idx = (len(gps_list) - 1) // 2
                     pt = gps_list[mid_idx]
-                    if isinstance(pt, dict) and "lat" in pt and "lon" in pt:
-                        def_gps = f"{float(pt['lat']):.6f},{float(pt['lon']):.6f}"
+                    if isinstance(pt, dict) and "lat" in pt:
+                        # Support both "lng" (from mkPt frontend) and "lon" (legacy)
+                        lng_val = pt.get("lng") or pt.get("lon")
+                        if lng_val:
+                            def_gps = f"{float(pt['lat']):.6f},{float(lng_val):.6f}"
                     elif isinstance(pt, str):
                         def_gps = pt
             except Exception:
