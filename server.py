@@ -563,6 +563,10 @@ async function omRunMatch() {
         const dlBtn = document.getElementById('omDlBtn');
         if (dlBtn) dlBtn.style.display = 'inline-block';
         
+        if (typeof saveToHistory === 'function') {
+            saveToHistory('farz', 'فرز_' + (omSmallFile ? omSmallFile.name : 'قائمة'), omMatchedRowsData);
+        }
+        
         omShowStatus('ok', `🎉 تمت المطابقة السريعة بنجاح! وُجد ${data.matched_count} صف مطابق لـ ${data.unique_matched_count} لوحة.`);
         box.scrollIntoView({behavior: 'smooth'});
     } catch(err) {
