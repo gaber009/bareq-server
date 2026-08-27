@@ -20,7 +20,6 @@ DebugProbesKt.bin
 
 # Local ASR engine
 asr_engine.py
-plate_decoder.py
 asr_engine/
 models/
 .whisper/

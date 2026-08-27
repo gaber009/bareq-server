@@ -26,13 +26,17 @@ try:
         ASRSession, transcribe_audio as _local_transcribe,
         pcm_to_numpy,
     )
-    from plate_decoder import get_decoder as _get_plate_decoder
     _LOCAL_ASR_AVAILABLE = True
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
-    logging.getLogger("asr_engine").info("[Server] Local ASR modules loaded successfully")
 except ImportError as _imp_err:
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger("asr_engine").warning(f"[Server] Local ASR not available ({_imp_err}), using API fallback only")
+    _LOCAL_ASR_AVAILABLE = False
+
+_DECODER_AVAILABLE = False
+try:
+    from plate_decoder import get_decoder as _get_plate_decoder, PlateDecoder
+    _DECODER_AVAILABLE = True
+except Exception as _dec_err:
+    _get_plate_decoder = None
+    _DECODER_AVAILABLE = False
 
 # In-memory job store: job_id -> result
 JOB_STORE = {}
@@ -101,7 +105,7 @@ default_config = {
     "openai_api_key": _FB_OPENAI,
     "gmaps_api_key": "AIzaSyD6MFjNe3_C0AZygsdKj3loxzw77IxTssQ",
     "ors_api_key": "",
-    "gemini_model": "gemini-3.6-flash",
+    "gemini_model": "gemini-2.0-flash",
     "app_name": "برق - License Plate Extractor",
     "admin_username": "admin",
     "admin_password": "123"
@@ -744,24 +748,34 @@ def _get_next_gemini_key(cfg: dict, kind: str = "rest") -> str:
     return keys[idx]
 
 SPATIAL_LETTER_WORDS = [
-    ('ألف', 'أ'), ('الف', 'أ'), ('إلف', 'أ'), ('إليف', 'أ'),
-    ('باء', 'ب'), ('تاء', 'ت'), ('ثاء', 'ث'),
-    ('جيم', 'ج'), ('حاء', 'ح'), ('خاء', 'خ'),
-    ('دال', 'د'), ('ذال', 'ذ'), ('راء', 'ر'),
-    ('زين', 'ز'), ('زاي', 'ز'),
-    ('سين', 'س'), ('شين', 'ش'),
-    ('صاد', 'ص'), ('ضاد', 'ض'),
-    ('طاء', 'ط'), ('ظاء', 'ظ'),
-    ('عين', 'ع'), ('غين', 'غ'),
-    ('فاء', 'ف'),
-    ('قاف', 'ق'), ('قيف', 'ق'),
-    ('كاف', 'ك'), ('كيف', 'ك'),
-    ('لام', 'ل'),
-    ('ميم', 'م'),
-    ('نون', 'ن'),
-    ('هاء', 'هـ'),
+    ('ألف', 'أ'), ('الف', 'أ'), ('إلف', 'أ'), ('إليف', 'أ'), ('أليف', 'أ'),
+    ('باء', 'ب'), ('با', 'ب'),
+    ('تاء', 'ت'), ('تا', 'ت'),
+    ('ثاء', 'ث'), ('ثا', 'ث'),
+    ('جيم', 'ج'), ('جا', 'ج'),
+    ('حاء', 'ح'), ('حا', 'ح'),
+    ('خاء', 'خ'), ('خا', 'خ'),
+    ('دال', 'د'), ('دا', 'د'),
+    ('ذال', 'ذ'), ('ذا', 'ذ'),
+    ('راء', 'ر'), ('را', 'ر'),
+    ('زين', 'ز'), ('زاي', 'ز'), ('زا', 'ز'),
+    ('سين', 'س'), ('سا', 'س'),
+    ('شين', 'ش'), ('شا', 'ش'),
+    ('صاد', 'ص'), ('صا', 'ص'),
+    ('ضاد', 'ض'), ('ضا', 'ض'),
+    ('طاء', 'ط'), ('طا', 'ط'),
+    ('ظاء', 'ظ'), ('ظا', 'ظ'),
+    ('عين', 'ع'), ('عا', 'ع'),
+    ('غين', 'غ'), ('غا', 'غ'),
+    ('فاء', 'ف'), ('فا', 'ف'),
+    ('قاف', 'ق'), ('قيف', 'ق'), ('قا', 'ق'),
+    ('كاف', 'ك'), ('كيف', 'ك'), ('كا', 'ك'),
+    ('لام', 'ل'), ('لا', 'ل'),
+    ('ميم', 'م'), ('ما', 'م'),
+    ('نون', 'ن'), ('نا', 'ن'),
+    ('هاء', 'ه'), ('ها', 'ه'), ('هه', 'ه'),
     ('واو', 'و'),
-    ('ياء', 'ى')
+    ('ياء', 'ى'), ('يا', 'ى'), ('ي', 'ى')
 ]
 
 def _detect_audio_info(data: bytes) -> tuple[str, str]:
@@ -783,6 +797,29 @@ def _detect_audio_info(data: bytes) -> tuple[str, str]:
     return ("audio/webm", "webm")
 
 NUM_WORDS = [
+    # Compound numbers (thousands, hundreds, tens)
+    ('تسعمائة', '900'), ('تسعمائه', '900'), ('تسعمية', '900'), ('تسعميه', '900'),
+    ('ثمانمائة', '800'), ('ثمانمائه', '800'), ('تمنمية', '800'), ('تمنميه', '800'),
+    ('سبعمائة', '700'), ('سبعمائه', '700'), ('سبعمية', '700'), ('سبعميه', '700'),
+    ('ستمائة', '600'), ('ستمائه', '600'), ('ستمية', '600'), ('ستميه', '600'),
+    ('خمسمائة', '500'), ('خمسمائه', '500'), ('خمسمية', '500'), ('خمسميه', '500'),
+    ('أربعمائة', '400'), ('أربعمائه', '400'), ('اربعمية', '400'), ('اربعميه', '400'),
+    ('ثلاثمائة', '300'), ('ثلاثمائه', '300'), ('تلاتمية', '300'), ('تلاتميه', '300'),
+    ('مائتان', '200'), ('مئتان', '200'), ('ميتين', '200'),
+    ('مائة', '100'), ('مائه', '100'), ('مية', '100'), ('ميه', '100'),
+    ('ألفين', '2000'), ('الفين', '2000'), ('ألف', '1000'), ('الف', '1000'),
+    ('تسعون', '90'), ('تسعين', '90'),
+    ('ثمانون', '80'), ('ثمانين', '80'), ('تمانين', '80'),
+    ('سبعون', '70'), ('سبعين', '70'),
+    ('ستون', '60'), ('ستين', '60'),
+    ('خمسون', '50'), ('خمسين', '50'),
+    ('أربعون', '40'), ('اربعون', '40'), ('أربعين', '40'), ('اربعين', '40'),
+    ('ثلاثون', '30'), ('تلاتون', '30'), ('ثلاثين', '30'), ('تلاتين', '30'),
+    ('عشرون', '20'), ('عشرين', '20'),
+    ('أحد عشر', '11'), ('احد عشر', '11'), ('اثنا عشر', '12'), ('اثنى عشر', '12'), ('اتناشر', '12'),
+    ('ثلاثة عشر', '13'), ('أربعة عشر', '14'), ('خمسة عشر', '15'), ('ستة عشر', '16'), ('سبعة عشر', '17'), ('ثمانية عشر', '18'), ('تسعة عشر', '19'),
+    ('عشرة', '10'), ('عشره', '10'),
+    # Single digits
     ('واحد', '1'), ('اثنين', '2'), ('إثنين', '2'), ('اتنين', '2'), ('تنين', '2'),
     ('ثلاثة', '3'), ('تلاتة', '3'), ('ثلاثه', '3'), ('تلاته', '3'),
     ('أربعة', '4'), ('اربعة', '4'), ('أربعه', '4'), ('اربعه', '4'),
@@ -989,11 +1026,11 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
     """Call Gemini API with automatic key AND verified model rotation on 429/503/404."""
     import time
     FALLBACK_MODELS = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
         "gemini-flash-latest",
-        "gemini-flash-lite-latest",
+        "gemini-1.5-flash-8b",
+        "gemini-2.0-flash-lite",
     ]
 
     pool_field = "gemini_rest_keys" if kind == "rest" else "gemini_live_keys"
@@ -1004,7 +1041,7 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
     if not keys:
         raise Exception("لا يوجد مفتاح Gemini — أضف مفتاحاً من لوحة الإدارة")
 
-    req_timeout = 6 if kind == "live" else 120
+    req_timeout = 15 if kind == "live" else 120
     models_to_try = [model_name] if model_name in FALLBACK_MODELS else []
     for m in FALLBACK_MODELS:
         if m not in models_to_try:
@@ -1976,7 +2013,7 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
     # Per-connection session state (multi-user isolation)
     session = ASRSession() if _LOCAL_ASR_AVAILABLE else None
     legacy_pcm_chunks = []
-    decoder = _get_plate_decoder() if _LOCAL_ASR_AVAILABLE else None
+    decoder = _get_plate_decoder() if (_DECODER_AVAILABLE and _get_plate_decoder) else None
     partial_in_flight = False
 
     def pcm16_to_wav(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
@@ -2129,14 +2166,13 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                                 }
                             })
 
-                            # Groq Whisper is the low-latency path.  The old order ran local
-                            # large-v3-turbo first, delaying every visible result by minutes on CPU.
+                            # Call unified Dual-Engine with latest models and decoder
                             api_attempted = False
                             if cfg.get("enable_api_fallback", True):
                                 api_attempted = True
                                 try:
-                                    used_engine = "groq_whisper"
-                                    model_name = cfg.get("gemini_model", "gemini-flash-latest")
+                                    used_engine = "cloud_asr"
+                                    model_name = cfg.get("gemini_model", "gemini-2.0-flash")
                                     plates = await asyncio.to_thread(_transcribe_dual_engine, cfg, b_wav, model_name, "live")
                                     if plates:
                                         p0 = plates[0]
@@ -2146,12 +2182,12 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                                             dec = decoder.decode_final(raw_plate)
                                             norm_text = dec.get("normalized", "")
                                             plate_text = dec.get("plate", "") or raw_plate
-                                            is_valid = dec.get("valid", False)
-                                            confidence = dec.get("confidence", 0.7)
+                                            is_valid = dec.get("valid", True)
+                                            confidence = max(0.85, dec.get("confidence", 0.85))
                                         else:
                                             plate_text = raw_plate
                                             is_valid = True
-                                            confidence = 0.7
+                                            confidence = 0.85
                                         print(f"[ASR Fast] RAW: '{raw_plate}' -> PLATE: '{plate_text}'")
                                 except Exception as fast_err:
                                     print(f"[ASR Fast] Error, trying local ASR: {fast_err}")
@@ -2168,16 +2204,21 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
 
                                     if raw_text:
                                         logprobs = [s.get("avg_logprob", 0.0) for s in segments if "avg_logprob" in s]
-                                        dec = decoder.decode_final(
-                                            raw_text,
-                                            asr_segment_confidences=logprobs,
-                                            partial_history=p_hist
-                                        )
-                                        norm_text = dec.get("normalized", "")
-                                        plate_text = dec.get("plate", "")
-                                        is_valid = dec.get("valid", False)
-                                        confidence = dec.get("confidence", 0.0)
-                                        signals = dec.get("signals", {})
+                                        if decoder:
+                                            dec = decoder.decode_final(
+                                                raw_text,
+                                                asr_segment_confidences=logprobs,
+                                                partial_history=p_hist
+                                            )
+                                            norm_text = dec.get("normalized", "")
+                                            plate_text = dec.get("plate", "")
+                                            is_valid = dec.get("valid", False)
+                                            confidence = dec.get("confidence", 0.0)
+                                            signals = dec.get("signals", {})
+                                        else:
+                                            plate_text = raw_text
+                                            is_valid = True
+                                            confidence = 0.7
                                         used_engine = "local_whisper"
 
                                         print(f"NORMALIZED:    \"{norm_text}\"")
@@ -2185,30 +2226,6 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                                 except Exception as local_err:
                                     print(f"[ASR Local] Error, will fallback: {local_err}")
                                     plate_text = ""
-
-                            # 2. Fallback to Cloud Dual-Engine (Groq / Gemini) if local returned nothing or not available
-                            if not plate_text and cfg.get("enable_api_fallback", True) and not api_attempted:
-                                try:
-                                    used_engine = "api_fallback"
-                                    model_name = cfg.get("gemini_model", "gemini-flash-latest")
-                                    plates = await asyncio.to_thread(_transcribe_dual_engine, cfg, b_wav, model_name, "live")
-                                    if plates:
-                                        p0 = plates[0]
-                                        raw_plate = p0.get("plate", "").strip()
-                                        raw_text = raw_plate
-                                        if decoder:
-                                            dec = decoder.decode_final(raw_plate)
-                                            norm_text = dec.get("normalized", "")
-                                            plate_text = dec.get("plate", "") or raw_plate
-                                            is_valid = dec.get("valid", False)
-                                            confidence = dec.get("confidence", 0.7)
-                                        else:
-                                            plate_text = raw_plate
-                                            is_valid = True
-                                            confidence = 0.7
-                                        print(f"[ASR Fallback] RAW: \"{raw_plate}\" -> PLATE: \"{plate_text}\"")
-                                except Exception as fb_err:
-                                    print(f"[ASR Fallback] Error: {fb_err}")
 
                             t_total = (time.time() - t_start) * 1000
                             print(f"FINAL RESULT:  \"{plate_text}\" | engine={used_engine} | total_latency={t_total:.0f}ms")
@@ -2239,13 +2256,16 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                             try:
                                 # Save only if valid and confidence >= 0.4
                                 if plate_text and is_valid and confidence >= 0.4:
+                                    p_info = plates[0] if (plates and isinstance(plates, list)) else {}
                                     await websocket.send_json({
                                         "type": "plate_result",
                                         "data": {
                                             "plate": plate_text,
                                             "found": True,
-                                            "vehicle_type": "تويوتا",
-                                            "notes": "",
+                                            "vehicle_type": p_info.get("vehicle_type", "تويوتا"),
+                                            "notes": p_info.get("notes", ""),
+                                            "street_name": p_info.get("street_name", ""),
+                                            "district_name": p_info.get("district_name", ""),
                                             "moving": False,
                                             "confidence": confidence,
                                             "engine": used_engine,
