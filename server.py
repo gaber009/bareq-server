@@ -2966,4 +2966,4 @@ if __name__ == "__main__":
     print("   Bareq System Server - Running Successfully")
     print(f"   URL: http://{host}:{port} (Local: http://127.0.0.1:{port})")
     print("==================================================")
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, ws="auto")
