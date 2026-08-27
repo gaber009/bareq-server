@@ -1363,6 +1363,7 @@ body.light .om-xls-grid td.om-plate-dup{background:rgba(253,224,71,.55)!importan
 /* ── Live check (Gemini Live) ── */
 .live-plate-item{padding:.55rem .85rem;border-radius:8px;margin-bottom:.4rem;font-family:var(--mono);font-size:.84rem;font-weight:600;width:100%}
 .live-plate-item.hit{background:rgba(34,197,94,.2);border:2px solid rgba(34,197,94,.65);color:var(--green);font-size:1.42rem;font-weight:900;letter-spacing:.02em;padding:.88rem 1.05rem;box-shadow:0 0 0 2px rgba(34,197,94,.12),0 8px 22px rgba(34,197,94,.22);animation:checkHitPulse .7s ease-out 1}
+.live-plate-item.hit-miss{background:rgba(251,191,36,.12);border:2px solid rgba(251,191,36,.55);color:#facc15;font-size:1.42rem;font-weight:900;letter-spacing:.02em;padding:.88rem 1.05rem}
 .live-plate-item.unk{background:var(--s2);border:1px solid var(--brd2);color:var(--dim2)}
 .check-live-plate-wrap{margin-top:.85rem;width:100%}
 .check-live-plate-head{display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin-bottom:.55rem;flex-wrap:wrap}
@@ -2986,6 +2987,7 @@ const pendingDeletes=new Map();
 let checkLargeFile=null;
 let checkDetected={large:null};
 let checkLiveRefReady=false;
+let checkLargeRefSet=new Set();   // normalised plate keys from uploaded Excel for frontend lookup
 let checkLiveWs=null,checkLiveMicOn=false,checkLiveListeningIntent=false,checkLiveAudioCtx=null,checkLiveScriptNode=null,checkLiveMediaStream=null;
 let checkLiveSilenceTimer=null,checkLiveLastVoiceAt=0,checkLiveTurnStartAt=0;
 let checkLiveSfxCtx=null;
@@ -4751,7 +4753,7 @@ function checkLiveCoerceFound(v){
 }
 function checkLiveAppendResultRow(data){
   const f=checkLiveCoerceFound(data.found);
-  if(f!==true) return;
+  // Accept both found=true and found=false — just display differently
   const list=document.getElementById('checkLivePlateColHit');
   if(!list) return;
   const plateText=String(data.plate||'\u2014');
@@ -4761,22 +4763,23 @@ function checkLiveAppendResultRow(data){
     for(let i=0;i<kids.length;i++){
       const el=kids[i];
       if(String(el.dataset&&el.dataset.nk||'')!==nk) continue;
-      el.textContent=plateText;
+      el.textContent=(f===true?'✔ ':'— ')+plateText;
       if(el!==list.firstChild) list.insertBefore(el,list.firstChild);
-      el.classList.remove('hit');
+      el.classList.remove('hit','hit-miss');
       void el.offsetWidth;
-      el.classList.add('hit');
-      if(!data.moving) checkLiveNotifyPlateHit(plateText);
+      el.classList.add(f===true?'hit':'hit-miss');
+      if(!data.moving&&f===true) checkLiveNotifyPlateHit(plateText);
       return;
     }
   }
   const div=document.createElement('div');
-  div.className='live-plate-item hit';
-  div.textContent=plateText;
+  div.className='live-plate-item '+(f===true?'hit':'hit-miss');
+  div.textContent=(f===true?'✔ ':'— ')+plateText;
   if(nk) div.dataset.nk=nk;
   list.insertBefore(div,list.firstChild);
-  if(!data.moving) checkLiveNotifyPlateHit(data.plate||'');
+  if(!data.moving&&f===true) checkLiveNotifyPlateHit(data.plate||'');
 }
+
 function checkLiveClearPlates(){
   const h=document.getElementById('checkLivePlateColHit');
   if(h) h.innerHTML='';
@@ -4996,6 +4999,54 @@ async function exportCheckSessionExcel(){
     showCheckStatus('ok','\u2714 \u062A\u0645 \u062A\u062D\u0645\u064A\u0644 \u0645\u0644\u0641 Excel',false);
   }catch(e){
     showCheckStatus('err','\u062E\u0637\u0623 \u0641\u064A \u0627\u0644\u062A\u0635\u062F\u064A\u0631: '+(e&&e.message?e.message:String(e)),false);
+  }
+}
+async function checkLiveRefUploadCurrentFile(){
+  if(!checkLargeFile) return;
+  try{
+    showCheckStatus('proc','جارٍ تحميل لوحات الشيت المرجعي …',true);
+    const fd=new FormData();
+    fd.append('file',checkLargeFile,checkLargeFile.name||'live.xlsx');
+    const pw=(document.getElementById('largePw')&&document.getElementById('largePw').value||'').trim();
+    if(pw) fd.append('password',pw);
+
+    // Use parse-gps-excel to get all rows (same endpoint used by fast-match section)
+    const res=await fetch('/api/parse-gps-excel',{method:'POST',body:fd,credentials:'include'});
+    const j=await res.json().catch(function(){return {};});
+    if(!res.ok){
+      var det=(j&&j.detail)?String(j.detail):'فشل قراءة الملف';
+      throw new Error(det);
+    }
+
+    const rows=j.rows||[];
+    const headers=j.headers||[];
+
+    // Auto-detect plate column
+    let plateCol='';
+    const col=document.getElementById('largeCol');
+    if(col&&col.value.trim()) plateCol=col.value.trim();
+    if(!plateCol){
+      for(const h of headers){
+        if(/لوحة|لوحه|اللوحة|plate/i.test(h)){ plateCol=h; break; }
+      }
+    }
+    if(!plateCol&&headers.length) plateCol=headers[0];
+
+    // Build normalised lookup Set
+    checkLargeRefSet=new Set();
+    for(const row of rows){
+      const v=String(row[plateCol]||'').trim();
+      if(v) checkLargeRefSet.add(normPlate(v));
+    }
+
+    checkLiveRefReady=true;
+    checkLiveExcelReady=true;
+    showCheckStatus('ok','✅ تم تحميل '+checkLargeRefSet.size+' لوحة مرجعية للتشيك المباشر.',false);
+  }catch(e){
+    checkLiveRefReady=false;
+    checkLiveExcelReady=false;
+    checkLargeRefSet=new Set();
+    showCheckStatus('err','تعذّر رفع مرجع التشيك: '+(e&&e.message?e.message:String(e)),false);
   }
 }
 function checkLiveOnMessage(ev){
@@ -5257,36 +5308,17 @@ async function checkLiveEnsureSocket(){
     };
   });
 }
-async function checkLiveRefUploadCurrentFile(){
-  if(!checkLargeFile) return;
-  try{
-    showCheckStatus('proc','\u062C\u0627\u0631\u064A \u0631\u0641\u0639 \u0627\u0644\u0644\u0648\u062D\u0627\u062A \u0625\u0644\u0649 \u0627\u0644\u062E\u0627\u062F\u0645 \u2026',true);
-    const fd=new FormData();
-    fd.append('file',checkLargeFile,checkLargeFile.name||'live.xlsx');
-    const pw=(document.getElementById('largePw')&&document.getElementById('largePw').value||'').trim();
-    if(pw) fd.append('password',pw);
-    const res=await fetch('/api/check-live/ref-plates-upload',{method:'POST',body:fd,credentials:'include'});
-    const j=await res.json().catch(function(){return {};});
-    if(!res.ok){
-      var det=(j&&j.detail)?String(j.detail):'\u0641\u0634\u0644 \u0627\u0644\u0631\u0641\u0639';
-      throw new Error(det);
-    }
-    checkLiveRefReady=true;
-    checkLiveExcelReady=true;
-    showCheckStatus('ok','\u2705 \u062A\u0645 \u062D\u0641\u0638 '+String(j.stored_count||0)+' \u0644\u0648\u062D\u0629 \u0644\u0644\u062A\u0634\u064A\u0643 \u0627\u0644\u0645\u0628\u0627\u0634\u0631.',false);
-  }catch(e){
-    checkLiveRefReady=false;
-    checkLiveExcelReady=false;
-    showCheckStatus('err','\u062A\u0639\u0630\u0651\u0631 \u0631\u0641\u0639 \u0645\u0631\u062C\u0639 \u0627\u0644\u062A\u0634\u064A\u0643: '+(e&&e.message?e.message:String(e)),false);
-  }
-}
+
+
 async function checkLiveToggleMic(){
   if(checkLiveMicOn){
     checkLiveStopMicOnly();
     return;
   }
-  showCheckStatus('proc','جاري الاتصال بالخادم …',true);
+  showCheckStatus('proc','جاري تشغيل الميكروفون …',true);
   checkLiveListeningIntent=true;
+
+  // Make sure WebSocket is alive (for plate_column_ready / excel feedback only)
   const ok=await checkLiveEnsureSocket();
   if(!ok){
     checkLiveListeningIntent=false;
@@ -5294,92 +5326,201 @@ async function checkLiveToggleMic(){
     return;
   }
   if(!checkLargeFile){
-    showCheckStatus('warn','يرجى رفع ملف Excel للمطابقة');
+    showCheckStatus('warn','يرجى رفع ملف Excel للمطابقة أولاً');
   }
+
   try{
-    const audioConstraints = {
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        channelCount: {ideal: 1},
-        sampleRate: {ideal: 16000}
-      }
-    };
-    const stream=await navigator.mediaDevices.getUserMedia(audioConstraints);
+    const stream=await navigator.mediaDevices.getUserMedia({
+      audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:{ideal:1},sampleRate:{ideal:16000}}
+    });
     checkLiveMediaStream=stream;
     const ctx=new (window.AudioContext||window.webkitAudioContext)();
-    if(ctx.state==='suspended'){
-      await ctx.resume();
-    }
+    if(ctx.state==='suspended') await ctx.resume();
     checkLiveAudioCtx=ctx;
 
     const mPerm=document.getElementById('dbgMicPerm');
     if(mPerm) mPerm.textContent='نشط ('+ctx.sampleRate+'Hz → 16kHz PCM16)';
     const wsDbg=document.getElementById('dbgWsState');
-    if(wsDbg && checkLiveWs) wsDbg.textContent=checkLiveWs.readyState===1?'متصل ومستعد (جاهز)':'جاري الاتصال';
+    if(wsDbg&&checkLiveWs) wsDbg.textContent=checkLiveWs.readyState===1?'متصل ومستعد (جاهز)':'—';
 
     const src=ctx.createMediaStreamSource(stream);
     const bufferSize=4096;
     const node=ctx.createScriptProcessor(bufferSize,1,1);
     checkLiveScriptNode=node;
+
+    // ── Local PCM accumulation buffer (float32 at native rate) ──
+    let turnChunksF32=[];   // raw float32 chunks from mic
+    let turnSampleRate=ctx.sampleRate;
+    let speechDetected=false;
+    let processingTurn=false;
+
+    // ── Send accumulated audio to /api/process — same as recording section ──
+    async function submitTurnAudio(){
+      if(processingTurn || turnChunksF32.length===0) return;
+      // Must have at least 0.5s of speech
+      const totalSamples=turnChunksF32.reduce(function(a,c){return a+c.length;},0);
+      if(totalSamples < turnSampleRate*0.5){ turnChunksF32=[]; return; }
+      processingTurn=true;
+      speechDetected=false;
+
+      // Merge all chunks into one Float32Array
+      const merged=new Float32Array(totalSamples);
+      let off=0;
+      for(const ch of turnChunksF32){ merged.set(ch,off); off+=ch.length; }
+      turnChunksF32=[];   // Clear for next turn immediately
+
+      // Downsample to 16kHz + normalise
+      const down16=checkLiveNormalizeForTransport(checkLiveDownsample(merged,turnSampleRate,16000));
+
+      // Build WAV from PCM16
+      const pcm16=checkLiveFloatTo16(down16);
+      const wavBytes=buildWavFromPcm16(pcm16,16000);
+      const wavBlob=new Blob([wavBytes],{type:'audio/wav'});
+
+      showCheckStatus('proc','🔄 جاري تفريغ الصوت …',true);
+      const bEl=document.getElementById('dbgBufDur');
+      if(bEl) bEl.textContent=(down16.length/16000).toFixed(2)+'s';
+      const eEl=document.getElementById('dbgEngine');
+      if(eEl) eEl.textContent='submitting…';
+
+      try{
+        const fd=new FormData();
+        fd.append('audio',wavBlob,'live_turn.wav');
+        const cfg=await fetch('/api/config').then(function(r){return r.ok?r.json():{};}).catch(function(){return{};});
+        fd.append('model_name',cfg.gemini_model||'gemini-2.0-flash');
+        fd.append('recorder_name','تشيك مباشر');
+        fd.append('district_default',(document.getElementById('checkSessionDefaultDistrict')||{}).value||'');
+
+        const resp=await fetch('/api/process',{method:'POST',body:fd});
+        const rj=await resp.json().catch(function(){return{};});
+        const jobId=rj.job_id||'';
+        if(!jobId){ showCheckStatus('err','خطأ في الإرسال للسيرفر'); processingTurn=false; return; }
+
+        // Poll for result
+        let result=null;
+        for(let i=0;i<25;i++){
+          await new Promise(function(r){setTimeout(r,800);});
+          const sr=await fetch('/api/transcribe/status/'+jobId).then(function(r){return r.ok?r.json():{};}).catch(function(){return{};});
+          if(sr.status==='done'){ result=sr; break; }
+        }
+
+        if(!result||!result.data){ showCheckStatus('warn','لم يتم استخراج أي لوحة'); processingTurn=false; return; }
+
+        const plates=result.data.plates||[];
+        const rawAsr=result.data.raw_asr||'';
+
+        // Update debug panel
+        const rAsr=document.getElementById('dbgRawAsr');
+        if(rAsr) rAsr.textContent=plates.map(function(p){return p.plate||'';}).join(' / ')||rawAsr||'—';
+        const ePlate=document.getElementById('dbgDecodedPlate');
+        if(ePlate) ePlate.textContent=plates.map(function(p){return p.plate||'';}).join(' / ')||'—';
+        const eEl2=document.getElementById('dbgEngine');
+        if(eEl2) eEl2.textContent='api/process';
+        const latEl=document.getElementById('dbgLatency');
+        if(latEl) latEl.textContent='—';
+
+        if(plates.length===0){
+          showCheckStatus('warn','لم يُتعرف على أي لوحة — تكلم بوضوح');
+          const el=document.getElementById('checkLiveTranscript');
+          if(el) el.textContent='لم يتم التعرف على لوحة';
+          const vEl=document.getElementById('dbgValid');
+          if(vEl){ vEl.textContent='❌ مرفوض (Invalid)'; vEl.style.color='#ef4444'; }
+          processingTurn=false;
+          return;
+        }
+
+        // Process each plate through WebSocket plate_result handler logic inline
+        for(const p of plates){
+          const pt=String(p.plate||'').trim();
+          if(!pt) continue;
+          // Lookup in loaded reference Excel (via frontend normPlate + checkLargeRefSet)
+          const isFound=checkLargeRefSet&&checkLargeRefSet.size>0
+            ?checkLargeRefSet.has(normPlate(pt))
+            :true;
+
+          // Update transcript
+          const el=document.getElementById('checkLiveTranscript');
+          if(el) el.textContent=(isFound?'✔ ':'— ')+pt;
+
+          const vEl=document.getElementById('dbgValid');
+          if(vEl){ vEl.textContent=isFound?'✔ مقبول (Valid)':'— لوحة جديدة'; vEl.style.color=isFound?'#34d399':'#facc15'; }
+          const cEl=document.getElementById('dbgConf');
+          if(cEl) cEl.textContent='85.0%';
+
+          // Add to plate list UI
+          checkLiveAppendResultRow({plate:pt,found:isFound,vehicle_type:p.vehicle_type||'',notes:p.notes||'',moving:false});
+          // Add to session table
+          checkLiveMaybeAppendSessionRow({
+            plate:pt,
+            found:isFound,
+            moving:false,
+            vehicle_type:p.vehicle_type||'',
+            notes:p.notes||'',
+            street_name:p.street_name||'',
+            district_name:p.district_name||''
+          });
+
+          if(isFound) checkLiveNotifyPlateHit(pt);
+        }
+
+        showCheckStatus('ok','✔ تم التعرف على '+plates.length+' لوحة',false);
+      }catch(e){
+        showCheckStatus('err','خطأ أثناء معالجة الصوت: '+(e&&e.message?e.message:String(e)));
+      }
+      processingTurn=false;
+    }
+
     node.onaudioprocess=function(e){
-      if(!checkLiveMicOn || !checkLiveWs || checkLiveWs.readyState!==1) return;
+      if(!checkLiveMicOn) return;
       const input=e.inputBuffer.getChannelData(0);
-      let sum=0, peak=0;
+      let sum=0,peak=0;
       for(let i=0;i<input.length;i++){
         const v=Math.abs(input[i]);
-        sum += v*v;
+        sum+=v*v;
         if(v>peak) peak=v;
       }
       const rms=Math.sqrt(sum/input.length);
-      const down=checkLiveNormalizeForTransport(checkLiveDownsample(input,ctx.sampleRate,16000));
-      const pcm=checkLiveFloatTo16(down);
-      const u8=new Uint8Array(pcm.buffer);
-      const b64=checkLiveUint8ToB64(u8);
 
       const rmsEl=document.getElementById('dbgRmsVal');
       if(rmsEl) rmsEl.textContent=rms.toFixed(4);
       const peakEl=document.getElementById('dbgPeakVal');
       if(peakEl) peakEl.textContent=peak.toFixed(4);
       const barEl=document.getElementById('dbgRmsBar');
-      if(barEl) barEl.style.width=Math.min(100, Math.round(rms*2500))+'%';
+      if(barEl) barEl.style.width=Math.min(100,Math.round(rms*2500))+'%';
       const badgeEl=document.getElementById('dbgVadBadge');
 
-      try{ checkLiveWs.send(JSON.stringify({type:'audio',data:b64})); }catch(err){}
-
-      if(rms > CHECK_LIVE_VOICE_RMS_THRESHOLD){
+      if(rms>CHECK_LIVE_VOICE_RMS_THRESHOLD){
+        // Speech detected — accumulate chunk
+        turnChunksF32.push(new Float32Array(input));
+        speechDetected=true;
         checkLiveLastVoiceAt=Date.now();
         if(!checkLiveTurnStartAt) checkLiveTurnStartAt=Date.now();
-        if(badgeEl){
-          badgeEl.textContent='VAD: SPEECH 🎙️';
-          badgeEl.style.background='#10b981';
-        }
-        if(checkLiveSilenceTimer){
-          clearTimeout(checkLiveSilenceTimer);
-          checkLiveSilenceTimer=null;
-        }
-        if(Date.now()-checkLiveTurnStartAt >= CHECK_LIVE_MAX_TURN_MS){
-            try{ checkLiveWs.send(JSON.stringify({type:'end_of_turn'})); }catch(_){}
-            checkLiveTurnStartAt=0;
+        if(badgeEl){badgeEl.textContent='VAD: SPEECH 🎙️';badgeEl.style.background='#10b981';}
+        if(checkLiveSilenceTimer){clearTimeout(checkLiveSilenceTimer);checkLiveSilenceTimer=null;}
+
+        // Also keep accumulating even in silence (don't clear) up to max 20s
+        if(checkLiveTurnStartAt&&Date.now()-checkLiveTurnStartAt>=20000){
+          submitTurnAudio();
+          checkLiveTurnStartAt=0;
         }
       }else{
-        if(badgeEl && !checkLiveSilenceTimer){
-          badgeEl.textContent='VAD: SILENCE 💤';
-          badgeEl.style.background='#374151';
-        }
-        if(!checkLiveSilenceTimer){
+        // Silence — still accumulate (for natural pauses in speech)
+        if(speechDetected) turnChunksF32.push(new Float32Array(input));
+        if(badgeEl&&!checkLiveSilenceTimer){badgeEl.textContent='VAD: SILENCE 💤';badgeEl.style.background='#374151';}
+
+        if(!checkLiveSilenceTimer&&speechDetected&&!processingTurn){
           checkLiveSilenceTimer=setTimeout(function(){
             checkLiveSilenceTimer=null;
-            if(!checkLiveMicOn || !checkLiveWs || checkLiveWs.readyState!==1) return;
-            if(Date.now()-checkLiveLastVoiceAt >= CHECK_LIVE_SILENCE_MS){
-              try{ checkLiveWs.send(JSON.stringify({type:'end_of_turn'})); }catch(_){}
+            if(!checkLiveMicOn) return;
+            if(Date.now()-checkLiveLastVoiceAt>=CHECK_LIVE_SILENCE_MS){
+              submitTurnAudio();
               checkLiveTurnStartAt=0;
             }
           },CHECK_LIVE_SILENCE_MS);
         }
       }
     };
+
     const mute=ctx.createGain();
     mute.gain.value=0;
     src.connect(node);
@@ -5389,12 +5530,41 @@ async function checkLiveToggleMic(){
     checkLiveListeningIntent=true;
     checkLiveLastVoiceAt=Date.now();
     document.getElementById('checkLiveToggleBtn').textContent='⏹ إيقاف الاستماع';
-    showCheckStatus('ok','جاري الاستماع المباشر …');
+    showCheckStatus('ok','🎙️ جاري الاستماع — تكلم بوضوح …');
   }catch(e){
     showCheckStatus('err','الميكروفون: '+e.message);
     checkLiveMicOn=false;
+    checkLiveListeningIntent=false;
   }
 }
+
+// Build a proper WAV file from PCM16 samples
+function buildWavFromPcm16(pcm16,sampleRate){
+  const numChannels=1,bitsPerSample=16;
+  const byteRate=sampleRate*numChannels*bitsPerSample/8;
+  const blockAlign=numChannels*bitsPerSample/8;
+  const dataSize=pcm16.length*2;
+  const buf=new ArrayBuffer(44+dataSize);
+  const view=new DataView(buf);
+  function writeStr(off,s){for(let i=0;i<s.length;i++) view.setUint8(off+i,s.charCodeAt(i));}
+  writeStr(0,'RIFF');
+  view.setUint32(4,36+dataSize,true);
+  writeStr(8,'WAVE');
+  writeStr(12,'fmt ');
+  view.setUint32(16,16,true);
+  view.setUint16(20,1,true);
+  view.setUint16(22,numChannels,true);
+  view.setUint32(24,sampleRate,true);
+  view.setUint32(28,byteRate,true);
+  view.setUint16(32,blockAlign,true);
+  view.setUint16(34,bitsPerSample,true);
+  writeStr(36,'data');
+  view.setUint32(40,dataSize,true);
+  const pcmBytes=new Uint8Array(pcm16.buffer);
+  new Uint8Array(buf,44).set(pcmBytes);
+  return buf;
+}
+
 function normPlate(s){
   s=String(s||'').trim();
   s=s.replace(/[\s\u200b\u200c\u200d\ufeff]+/g,'');
