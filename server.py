@@ -1234,33 +1234,50 @@ async def process_audio(request: Request):
         else:
             plates = []
 
-        # Enrich plates with GPS coordinates and metadata
-        def_gps = ""
+        # Parse and format GPS points list
+        formatted_gps_list = []
         if gps_data_raw:
             try:
                 gps_list = json.loads(gps_data_raw)
-                if isinstance(gps_list, list) and gps_list:
-                    mid_idx = (len(gps_list) - 1) // 2
-                    pt = gps_list[mid_idx]
-                    if isinstance(pt, dict) and "lat" in pt:
-                        # Support both "lng" (from mkPt frontend) and "lon" (legacy)
-                        lng_val = pt.get("lng") or pt.get("lon")
-                        if lng_val:
-                            def_gps = f"{float(pt['lat']):.6f},{float(lng_val):.6f}"
-                    elif isinstance(pt, str):
-                        def_gps = pt
+                if isinstance(gps_list, list):
+                    for pt in gps_list:
+                        if isinstance(pt, dict) and "lat" in pt:
+                            lng_val = pt.get("lng") or pt.get("lon")
+                            if lng_val:
+                                formatted_gps_list.append(f"{float(pt['lat']):.6f},{float(lng_val):.6f}")
+                        elif isinstance(pt, str) and pt.strip():
+                            formatted_gps_list.append(pt.strip())
             except Exception:
                 pass
 
-        for p in plates:
-            if not p.get("gps") and def_gps:
-                p["gps"] = def_gps
-            if not p.get("street_location") and def_gps:
-                p["street_location"] = def_gps
+        # Distribute GPS coordinates across plates 1-to-1 chronologically
+        num_plates = len(plates)
+        num_gps = len(formatted_gps_list)
+
+        from datetime import datetime
+        current_date_str = datetime.now().strftime("%d/%m/%Y")
+
+        for idx, p in enumerate(plates):
+            plate_gps = ""
+            if num_gps > 0:
+                if num_plates <= num_gps:
+                    g_idx = int(idx * (num_gps - 1) / max(1, num_plates - 1)) if num_plates > 1 else 0
+                    plate_gps = formatted_gps_list[min(g_idx, num_gps - 1)]
+                else:
+                    g_idx = int(idx * (num_gps - 1) / max(1, num_plates - 1)) if num_plates > 1 else 0
+                    plate_gps = formatted_gps_list[min(g_idx, num_gps - 1)]
+
+            if plate_gps:
+                p["gps"] = plate_gps
+                if not p.get("street_location"):
+                    p["street_location"] = plate_gps
+
             if not p.get("district_name") and district:
                 p["district_name"] = district
             if not p.get("recorder_name") and recorder_name:
                 p["recorder_name"] = recorder_name
+            if not p.get("recording_date"):
+                p["recording_date"] = current_date_str
 
         JOB_STORE[job_id] = {
             "status": "done",
@@ -1268,6 +1285,7 @@ async def process_audio(request: Request):
             "recorder_name": recorder_name,
             "district": district
         }
+
 
     except Exception as e:
         print(f"Process audio error: {e}")
@@ -1706,13 +1724,16 @@ async def parse_export_append(request: Request):
 @app.post("/api/export-check-session")
 @app.post("/api/export-excel")
 async def export_excel(request: Request):
-
-    """Generate a real Excel file from rows_json and return it as download"""
+    """Generate a real Excel file with exact 8-column layout matching user specification:
+    [اللوحة, النوع, الملاحظات, الشارع, الموقع, الحي, التاريخ, المندوب]
+    """
     try:
         form = await request.form()
         rows_json = form.get("rows_json", "[]")
-        sheet_name = str(form.get("sheet_name") or "بيانات المركبات")
-        district_default = str(form.get("district_default") or "")
+        sheet_name = str(form.get("sheet_name") or "بيانات المركبات").strip()
+        district_default = str(form.get("district_default") or "").strip()
+        recorder_default = str(form.get("recorder_default") or "").strip()
+        street_default = str(form.get("street_default") or "").strip()
 
         rows = json.loads(rows_json)
         if not isinstance(rows, list):
@@ -1720,46 +1741,39 @@ async def export_excel(request: Request):
 
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.title = sheet_name[:31]  # Excel sheet name max 31 chars
+        ws.title = (sheet_name[:31] if sheet_name else "بيانات المركبات")
+        ws.sheet_view.rightToLeft = True  # RTL display for Arabic
 
         # --- Styling ---
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         from openpyxl.utils import get_column_letter
+        import urllib.parse
 
-        header_font = Font(bold=True, color="FFFFFF", size=12)
-        header_fill = PatternFill("solid", fgColor="1E3A5F")
+        # Green header fill matching user's image (#1E5631 / dark green)
+        header_font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+        header_fill = PatternFill("solid", fgColor="1E5631")
         center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        thin = Side(style="thin", color="CCCCCC")
+        link_font = Font(name="Arial", color="0563C1", underline="single", size=10)
+        regular_font = Font(name="Arial", size=10)
+        thin = Side(style="thin", color="D1D5DB")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-        # Standard field mapping between internal keys and export display headers
-        FIELD_MAP = [
-            ("رقم اللوحة", ["full_plate", "plate", "رقم اللوحة", "اللوحة", "plate_number"]),
-            ("GPS", ["gps", "GPS", "موقع", "احداثيات", "إحداثيات"]),
-            ("الحي", ["district_name", "district", "الحي", "حي", "المنطقة"]),
+        # Standard 8 Columns in exact order (RTL: Rightmost is اللوحة, Leftmost is المندوب)
+        STANDARDIZED_COLS = [
+            ("اللوحة", ["full_plate", "plate", "رقم اللوحة", "اللوحة", "plate_number"]),
+            ("النوع", ["vehicle_type", "نوع السيارة", "car_type", "النوع", "طراز"]),
+            ("الملاحظات", ["notes", "ملاحظات", "ملاحظة", "location_details", "تفاصيل"]),
             ("الشارع", ["street_name", "street", "الشارع", "شارع"]),
-            ("ملاحظات", ["notes", "ملاحظات", "ملاحظة", "location_details", "تفاصيل"]),
-            ("نوع السيارة", ["vehicle_type", "نوع السيارة", "car_type", "النوع", "طراز"]),
-            ("موقع الشارع", ["street_location", "موقع الشارع", "location", "وصف الموقع"]),
-            ("المسجّل", ["recorder_name", "المسجّل", "المسجل", "المندوب"]),
+            ("الموقع", ["gps", "GPS", "موقع", "احداثيات", "إحداثيات", "street_location"]),
+            ("الحي", ["district_name", "district", "الحي", "حي", "المنطقة"]),
             ("التاريخ", ["recording_date", "date", "التاريخ", "تاريخ التسجيل"]),
+            ("المندوب", ["recorder_name", "المسجّل", "المسجل", "المندوب"]),
         ]
 
-        # Determine export headers
-        cols = [header for header, _ in FIELD_MAP]
-
-        # Check if there are any custom extra columns in rows
-        if rows:
-            known_keys = set()
-            for _, aliases in FIELD_MAP:
-                known_keys.update(aliases)
-            for r in rows:
-                if isinstance(r, dict):
-                    for k in r.keys():
-                        if k not in known_keys and k not in cols and not k.startswith("_") and k not in ["id", "blob", "url", "status", "found"]:
-                            cols.append(k)
+        cols = [header for header, _ in STANDARDIZED_COLS]
 
         # Write header row
+        ws.row_dimensions[1].height = 28
         for col_idx, col_name in enumerate(cols, start=1):
             cell = ws.cell(row=1, column=col_idx, value=col_name)
             cell.font = header_font
@@ -1767,48 +1781,69 @@ async def export_excel(request: Request):
             cell.alignment = center_align
             cell.border = border
 
-        # Helper to get value for a header from a row
-        def get_row_val(row_dict, header_name):
+        # Helper to get value from row dict
+        def get_col_val(row_dict, header_name):
             if not isinstance(row_dict, dict):
                 return ""
-            # 1. Direct match
-            if header_name in row_dict and row_dict[header_name] not in [None, ""]:
-                return str(row_dict[header_name]).strip()
-            # 2. Alias match
-            for h, aliases in FIELD_MAP:
+            for h, aliases in STANDARDIZED_COLS:
                 if h == header_name:
                     for a in aliases:
                         if a in row_dict and row_dict[a] not in [None, ""]:
                             return str(row_dict[a]).strip()
             return ""
 
+        from datetime import datetime
+        today_date_str = datetime.now().strftime("%d/%m/%Y")
+
         # Write data rows
-        alt_fill = PatternFill("solid", fgColor="EEF2F7")
+        alt_fill = PatternFill("solid", fgColor="F9FAFB")
         for row_idx, row in enumerate(rows, start=2):
+            ws.row_dimensions[row_idx].height = 24
             fill = alt_fill if row_idx % 2 == 0 else None
+            
             for col_idx, col_name in enumerate(cols, start=1):
-                val = get_row_val(row, col_name)
-                # Fallback for district
+                val = get_col_val(row, col_name)
+
+                # Fallbacks for defaults
                 if col_name == "الحي" and not val and district_default:
                     val = district_default
-                # Fallback for street_location if empty but GPS exists
-                if col_name == "موقع الشارع" and not val:
-                    val = get_row_val(row, "GPS")
+                if col_name == "الشارع" and not val and street_default:
+                    val = street_default
+                if col_name == "المندوب" and not val and recorder_default:
+                    val = recorder_default
+                if col_name == "التاريخ" and not val:
+                    val = today_date_str
 
-                cell = ws.cell(row=row_idx, column=col_idx, value=val if val else "")
+                cell = ws.cell(row=row_idx, column=col_idx)
                 cell.alignment = center_align
                 cell.border = border
                 if fill:
                     cell.fill = fill
 
+                # Handle Google Maps Link in 'الموقع' column
+                if col_name == "الموقع" and val and ("," in val or "http" in val):
+                    gps_coords = val
+                    if "http" in val:
+                        # Extract coords from existing URL if possible
+                        m = re.search(r'([0-9]+\.[0-9]+,[0-9]+\.[0-9]+)', val)
+                        if m:
+                            gps_coords = m.group(1)
+                    if "," in gps_coords:
+                        nav_url = f"https://www.google.com/maps/dir/?api=1&destination={gps_coords.strip()}"
+                        cell.value = nav_url
+                        cell.hyperlink = nav_url
+                        cell.font = link_font
+                    else:
+                        cell.value = val
+                        cell.font = regular_font
+                else:
+                    cell.value = val if val else ""
+                    cell.font = regular_font
+
         # Auto-fit column widths
+        col_widths = {1: 18, 2: 14, 3: 20, 4: 18, 5: 32, 6: 16, 7: 14, 8: 16}
         for col_idx in range(1, len(cols) + 1):
-            max_len = 12
-            for row_idx in range(1, len(rows) + 2):
-                c_val = ws.cell(row=row_idx, column=col_idx).value
-                if c_val:
-                    max_len = max(max_len, len(str(c_val)))
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 45)
+            ws.column_dimensions[get_column_letter(col_idx)].width = col_widths.get(col_idx, 16)
 
         # Freeze header row
         ws.freeze_panes = "A2"
@@ -1818,11 +1853,13 @@ async def export_excel(request: Request):
         wb.save(buf)
         buf.seek(0)
 
-        filename = f"bareq_export_{int(time.time())}.xlsx"
+        safe_sheet_name = re.sub(r'[\\/*?:\"<>|]', '_', sheet_name) or "bareq_export"
+        filename = f"{safe_sheet_name}_{int(time.time())}.xlsx"
+        quoted_filename = urllib.parse.quote(filename)
         return Response(
             content=buf.read(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted_filename}"}
         )
 
     except Exception as e:
@@ -2387,7 +2424,6 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
 
 
 # --- AUTH ENDPOINTS ---
-# --- AUTH ENDPOINTS ---
 @app.post("/auth/login")
 async def login(req: Request):
     data = await req.json()
@@ -2414,6 +2450,19 @@ async def login(req: Request):
         if (u.get("username") == u_in or u.get("email") == u_in) and u.get("password") == p_in:
             if not u.get("is_active", True):
                 raise HTTPException(status_code=403, detail="هذا الحساب معطل، يرجى التواصل مع الإدارة")
+            
+            # Check subscription end date
+            sub_end = str(u.get("subscription_end", "")).strip()
+            is_expired = False
+            if sub_end and sub_end not in ["غير محدود", "مفتوح - 30 يوماً"]:
+                try:
+                    from datetime import datetime
+                    end_dt = datetime.strptime(sub_end[:10], "%Y-%m-%d")
+                    if end_dt.date() < datetime.now().date():
+                        is_expired = True
+                except Exception:
+                    pass
+
             return {
                 "status": "ok",
                 "token": f"bareq_token_{u['id']}",
@@ -2428,6 +2477,7 @@ async def login(req: Request):
                 "rows_limit": u.get("rows_limit", 500),
                 "subscription_start": u.get("subscription_start", ""),
                 "subscription_end": u.get("subscription_end", ""),
+                "subscription_expired": is_expired,
                 "is_trial": u.get("is_trial", False),
                 "is_active": u.get("is_active", True)
             }
@@ -2490,6 +2540,7 @@ async def register(req: Request):
         "plan_name": new_user["plan_name"],
         "rows_limit": new_user["rows_limit"],
         "subscription_end": new_user["subscription_end"],
+        "subscription_expired": False,
         "is_trial": True,
         "is_active": True
     }
@@ -2498,6 +2549,13 @@ async def register(req: Request):
 async def auth_me(req: Request):
     auth_header = req.headers.get("Authorization", "").strip()
     token = auth_header.replace("Bearer ", "").strip()
+    
+    # Fallback to query param or cookie
+    if not token:
+        token = req.query_params.get("token", "").strip()
+    if not token:
+        token = req.cookies.get("access_token", "").strip()
+
     cfg = load_config()
     users = load_users()
     
@@ -2513,25 +2571,97 @@ async def auth_me(req: Request):
             "display_name": "مدير النظام",
             "plan_name": "باقة المدير (غير محدود)",
             "rows_limit": 9999999,
-            "subscription_end": "غير محدود"
+            "subscription_end": "غير محدود",
+            "subscription_expired": False,
+            "is_active": True
         }
         
     # Try finding user by token
     for u in users:
-        if token.endswith(str(u["id"])) or f"bareq_token_{u['id']}" in token:
+        if token.endswith(str(u["id"])) or f"bareq_token_{u['id']}" in token or token == f"bareq_token_{u['id']}":
+            if not u.get("is_active", True):
+                raise HTTPException(status_code=403, detail="هذا الحساب معطل")
+            
+            sub_end = str(u.get("subscription_end", "")).strip()
+            is_expired = False
+            if sub_end and sub_end not in ["غير محدود", "مفتوح - 30 يوماً"]:
+                try:
+                    from datetime import datetime
+                    end_dt = datetime.strptime(sub_end[:10], "%Y-%m-%d")
+                    if end_dt.date() < datetime.now().date():
+                        is_expired = True
+                except Exception:
+                    pass
+
             return {
                 "status": "ok",
+                "user_id": u["id"],
                 "is_admin": u.get("is_admin", False),
                 "username": u.get("username", ""),
                 "display_name": u.get("display_name", ""),
+                "email": u.get("email", ""),
+                "phone": u.get("phone", ""),
+                "plan_id": u.get("plan_id", 0),
                 "plan_name": u.get("plan_name", "فترة تجريبية مجانية"),
                 "rows_limit": u.get("rows_limit", 500),
+                "subscription_start": u.get("subscription_start", ""),
                 "subscription_end": u.get("subscription_end", ""),
+                "subscription_expired": is_expired,
                 "is_trial": u.get("is_trial", False),
                 "is_active": u.get("is_active", True)
             }
             
     raise HTTPException(status_code=401, detail="انتهت صلاحية الجلسة، يرجى تسجيل الدخول")
+
+# --- WHATSAPP SUPPORT API ---
+@app.get("/api/whatsapp")
+async def get_whatsapp_number():
+    cfg = load_config()
+    return {
+        "status": "ok",
+        "whatsapp_number": cfg.get("whatsapp_number", "+966500000000"),
+        "support_message": "مرحباً الدعم الفني لتطبيق بارق، أحتاج مساعدة."
+    }
+
+@app.post("/admin/whatsapp")
+async def set_whatsapp_number(req: Request):
+    data = await req.json()
+    num = str(data.get("whatsapp_number", "")).strip()
+    if not num:
+        raise HTTPException(status_code=400, detail="يرجى إدخال رقم هاتف صحيح")
+    cfg = load_config()
+    cfg["whatsapp_number"] = num
+    save_config(cfg)
+    return {"status": "ok", "message": "تم تحديث رقم الدعم الفني عبر واتساب بنجاح", "whatsapp_number": num}
+
+# --- MASTER DATABASE API ---
+@app.get("/api/master-database/info")
+async def get_master_db_info():
+    db_path = os.path.join(BASE_DIR, "master_database.xlsx")
+    if os.path.exists(db_path):
+        size_kb = round(os.path.getsize(db_path) / 1024, 1)
+        mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(db_path)))
+        return {"status": "ok", "exists": True, "size_kb": size_kb, "last_updated": mtime}
+    return {"status": "ok", "exists": False}
+
+@app.post("/admin/master-database/upload")
+async def upload_master_database(req: Request):
+    form = await req.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(status_code=400, detail="يرجى اختيار ملف الإكسل")
+    content = await file.read()
+    db_path = os.path.join(BASE_DIR, "master_database.xlsx")
+    with open(db_path, "wb") as fh:
+        fh.write(content)
+    headers, rows = _parse_any_excel_file(content, "")
+    return {
+        "status": "ok",
+        "message": f"تم رفع وتحديث قاعدة البيانات الرئيسية بنجاح ({len(rows)} صف)",
+        "rows_count": len(rows),
+        "headers": headers
+    }
+
 
 @app.get("/api/public-plans")
 async def get_public_plans():

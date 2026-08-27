@@ -1807,6 +1807,33 @@ tbody tr:hover {
   box-shadow: 0 6px 28px rgba(0, 229, 255, 0.85) !important;
 }
 
+
+/* ── WhatsApp Floating Widget & History ── */
+.wa-float-btn{
+  position:fixed;
+  bottom:24px;
+  left:24px;
+  background:#22c55e;
+  color:#ffffff;
+  padding:.65rem 1.15rem;
+  border-radius:30px;
+  font-family:var(--ar);
+  font-size:.84rem;
+  font-weight:800;
+  display:flex;
+  align-items:center;
+  gap:.45rem;
+  box-shadow:0 6px 20px rgba(34,197,94,.4);
+  z-index:99999;
+  text-decoration:none;
+  transition:all .2s ease;
+}
+.wa-float-btn:hover{
+  background:#16a34a;
+  transform:scale(1.05);
+  color:#ffffff;
+}
+
 </style>
 </head>
 <body>
@@ -1979,6 +2006,7 @@ tbody tr:hover {
   <button class="tnav-btn field" id="navField" onclick="switchPage('field')">🔍 الفرز والمطابقة</button>
   <button class="tnav-btn checkpage" id="navCheck" onclick="switchPage('check')">⚡ التشيك الصوتي المباشر</button>
   <button class="tnav-btn checkpage" id="navGmaps" onclick="switchPage('gmaps')">🗺️ خرائط Google</button>
+  <button class="tnav-btn checkpage" id="navHistory" onclick="switchPage('history')">📜 السجل التاريخي</button>
   <button class="tnav-btn checkpage" id="navAdmin" onclick="switchPage('admin')">🛡️ لوحة الإدارة</button>
 </div>
 
@@ -1987,10 +2015,12 @@ tbody tr:hover {
 <div id="pageTafrigh" style="display:none">
 <div class="panel">
   <div class="ptitle">&#x2699;&#xFE0F; إعدادات التسجيل</div>
-  <div class="row2">
-    <div><label class="lbl">اسم المسجّل</label><input type="text" id="recorderName" placeholder="أدخل اسمك"/></div>
-    <div><label class="lbl">الحي</label><input type="text" id="districtName" placeholder="اختياري — يُصدَّر لكل الصفوف"/></div>
-    <div><label class="lbl">اسم ورقة Excel</label><input type="text" id="sheetName" value="بيانات المركبات" oninput="syncTafrighSheetTitle()"/></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.65rem;align-items:end">
+    <div><label class="lbl">اسم المسجّل / المندوب</label><input type="text" id="recorderName" placeholder="أدخل اسمك"/></div>
+    <div><label class="lbl">اسم الشارع</label><input type="text" id="streetName" placeholder="اسم الشارع الافتراضي"/></div>
+    <div><label class="lbl">الحي</label><input type="text" id="districtName" placeholder="اسم الحي الافتراضي"/></div>
+    <div><label class="lbl">التاريخ</label><input type="text" id="recordDate" placeholder="DD/MM/YYYY"/></div>
+    <div><label class="lbl">اسم ورقة / شيت Excel</label><input type="text" id="sheetName" value="بيانات المركبات" oninput="syncTafrighSheetTitle()"/></div>
   </div>
 </div>
 <div id="livePanel">
@@ -2083,7 +2113,7 @@ tbody tr:hover {
     <div class="om-xls-titlebar" id="tafrighSheetTitlebar">بيانات المركبات</div>
     <div class="om-xls-scroll tafrigh-xls-scroll">
       <table class="om-xls-grid" id="tafrighDataTable">
-        <thead><tr><th>رقم اللوحة</th><th>GPS</th><th>الحي</th><th>الشارع</th><th>ملاحظات</th><th>نوع السيارة</th><th>موقع الشارع</th><th></th></tr></thead>
+        <thead><tr><th>اللوحة</th><th>النوع</th><th>الملاحظات</th><th>الشارع</th><th>الموقع</th><th>الحي</th><th>التاريخ</th><th>المندوب</th><th></th></tr></thead>
         <tbody id="excelBody"></tbody>
       </table>
     </div>
@@ -2092,6 +2122,49 @@ tbody tr:hover {
 </div>
 </div><!-- /pageTafrigh -->
 
+
+
+<!-- ═══════════ PAGE: HISTORY (السجل التاريخي — 3 أقسام) ═══════════ -->
+<div id="pageHistory" style="display:none">
+  <div class="panel violet-accent">
+    <div class="ptitle violet">📜 السجل التاريخي للتطبيق</div>
+    <p style="font-size:.8rem;color:var(--dim2);margin-bottom:1rem">استعراض وتصدير جميع عمليات المطابقة والتسجيلات السابقة المحفوظة على هذا الجهاز.</p>
+    
+    <div class="mode-chips" style="margin-bottom:1rem">
+      <div class="mchip sel" id="histTabCheck" onclick="switchHistoryTab('check')">⚡ تطابق التشيك المباشر (<span id="histCntCheck">0</span>)</div>
+      <div class="mchip" id="histTabRecord" onclick="switchHistoryTab('record')">🏙️ تسجيلات الميدان (<span id="histCntRecord">0</span>)</div>
+      <div class="mchip" id="histTabFarz" onclick="switchHistoryTab('farz')">🔍 نتائج الفرز والمطابقة (<span id="histCntFarz">0</span>)</div>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.8rem;flex-wrap:wrap;gap:.5rem">
+      <input type="text" id="histSearchIn" placeholder="🔍 بحث في السجل..." style="max-width:280px;padding:.4rem .75rem;border-radius:8px;border:1px solid var(--brd2);background:var(--s1);color:var(--text);font-size:.82rem" oninput="renderCurrentHistoryTab()"/>
+      <div style="display:flex;gap:.5rem">
+        <button type="button" class="tb-btn primary sm" onclick="exportCurrentHistoryExcel()">📥 تصدير السجل الحالي إلى Excel</button>
+        <button type="button" class="tb-btn danger sm" onclick="clearCurrentHistoryTab()">🗑 مسح هذا السجل</button>
+      </div>
+    </div>
+
+    <div class="tbl-outer" style="max-height:60vh;overflow:auto">
+      <table class="om-xls-grid">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>اللوحة</th>
+            <th>النوع</th>
+            <th>الملاحظات</th>
+            <th>الشارع</th>
+            <th>الموقع</th>
+            <th>الحي</th>
+            <th>التاريخ</th>
+            <th>المندوب</th>
+            <th>الحالة</th>
+          </tr>
+        </thead>
+        <tbody id="historyTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
 
 <!-- ═══════════ PAGE: FIELD (الفرز — مطابقة ملفين + GPS) ═══════════ -->
 <div id="pageField" style="display:none">
@@ -2389,18 +2462,22 @@ tbody tr:hover {
         <label class="lbl">&#x1F4DD; اسم ورقة / ملف التصدير</label>
         <input type="text" id="checkSessionSheetName" class="check-session-input" style="max-width:420px;width:100%;margin-top:.35rem" placeholder="مثال: تشيك زيارة 17-4" dir="rtl" oninput="syncCheckSessionSheetTitle()"/>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:.55rem;margin:.55rem 0 .75rem;align-items:end">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.55rem;margin:.55rem 0 .75rem;align-items:end">
         <div>
-          <label class="lbl">الحي</label>
-          <input type="text" id="checkSessionDefaultDistrict" class="check-session-input" style="width:100%;margin-top:.25rem" dir="rtl" placeholder="يُملأ في الصفوف الجديدة" oninput="saveCheckSessionData()"/>
+          <label class="lbl">اسم المندوب / المسجّل</label>
+          <input type="text" id="checkSessionDefaultRecorder" class="check-session-input" style="width:100%;margin-top:.25rem" dir="rtl" placeholder="اسم المندوب" oninput="saveCheckSessionData()"/>
         </div>
         <div>
           <label class="lbl">الشارع</label>
-          <input type="text" id="checkSessionDefaultStreet" class="check-session-input" style="width:100%;margin-top:.25rem" dir="rtl" placeholder="يُملأ في الصفوف الجديدة" oninput="saveCheckSessionData()"/>
+          <input type="text" id="checkSessionDefaultStreet" class="check-session-input" style="width:100%;margin-top:.25rem" dir="rtl" placeholder="اسم الشارع" oninput="saveCheckSessionData()"/>
         </div>
         <div>
-          <label class="lbl">اسم المسجّل</label>
-          <input type="text" id="checkSessionDefaultRecorder" class="check-session-input" style="width:100%;margin-top:.25rem" dir="rtl" placeholder="يُملأ في الصفوف الجديدة" oninput="saveCheckSessionData()"/>
+          <label class="lbl">الحي</label>
+          <input type="text" id="checkSessionDefaultDistrict" class="check-session-input" style="width:100%;margin-top:.25rem" dir="rtl" placeholder="اسم الحي" oninput="saveCheckSessionData()"/>
+        </div>
+        <div>
+          <label class="lbl">التاريخ</label>
+          <input type="text" id="checkSessionDefaultDate" class="check-session-input" style="width:100%;margin-top:.25rem" dir="rtl" placeholder="DD/MM/YYYY" oninput="saveCheckSessionData()"/>
         </div>
       </div>
       <div class="om-xls-sheet" id="checkSessionXlsSheet">
@@ -2408,7 +2485,7 @@ tbody tr:hover {
         <div class="om-xls-scroll tafrigh-xls-scroll">
           <table class="om-xls-grid" id="checkSessionDataTable">
             <thead><tr>
-              <th>رقم اللوحة</th><th>GPS</th><th>تاريخ التسجيل</th><th>الحي</th><th>الشارع</th><th>ملاحظات</th><th>نوع السيارة</th><th>اسم المسجّل</th><th></th>
+              <th>اللوحة</th><th>النوع</th><th>الملاحظات</th><th>الشارع</th><th>الموقع</th><th>الحي</th><th>التاريخ</th><th>المندوب</th><th></th>
             </tr></thead>
             <tbody id="checkSessionExcelBody"></tbody>
           </table>
@@ -3963,7 +4040,14 @@ async function getMicStreamOrThrow(){
   if(!navigator.mediaDevices||typeof navigator.mediaDevices.getUserMedia!=='function'){
     throw new Error('المتصفح لا يدعم getUserMedia في هذا السياق');
   }
-  return navigator.mediaDevices.getUserMedia({audio:true});
+  return navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1
+    }
+  });
 }
 // ── Tafrigh recording (WAV via AudioContext PCM) ──────
 function onRecBtnClick(){if(recState==='idle')startFreshRec();else if(recState==='recording')stopRec();}
@@ -4041,7 +4125,15 @@ function updateTimerUI(){
   const warn=(MAX_REC_SECS-recSecs)<=60;
   document.getElementById('timer').classList.toggle('warn',warn);document.getElementById('recBar').classList.toggle('warn',warn);
 }
-function downloadLiveAudio(){if(!liveBlob)return;triggerDownload(liveBlob,nextMilWavName());}
+function downloadLiveAudio(){
+  if(!liveBlob) return;
+  var defName = 'تسجيل_' + (document.getElementById('streetName')&&document.getElementById('streetName').value.trim() || 'شارع') + '_' + (document.getElementById('districtName')&&document.getElementById('districtName').value.trim() || 'حي') + '_' + new Date().toISOString().slice(0,10);
+  var customName = prompt('أدخل اسم ملف التسجيل الصوتي لحفظه على جهازك:', defName);
+  if(customName === null) return;
+  customName = customName.trim() || defName;
+  if(!customName.toLowerCase().endsWith('.wav')) customName += '.wav';
+  triggerDownload(liveBlob, customName);
+}
 const MIL_WAV_SEQ_KEY='milWavDownloadSeq_v1';
 function nextMilWavName(){
   let n=parseInt(localStorage.getItem(MIL_WAV_SEQ_KEY)||'0',10);
@@ -4368,20 +4460,26 @@ function renderTable(){
   tableRows.forEach((row,i)=>{
     const tr=document.createElement('tr');
     const plateVal = row.full_plate || row.plate || '';
-    const gpsVal = (row.gps || '').trim();
-    const streetLoc = row.street_location || streetLocForRow(row) || '';
-    const gpsLink = (gpsVal && gpsVal !== '—' && gpsVal.includes(','))
-      ? '<a href="https://www.google.com/maps?q='+encodeURIComponent(gpsVal)+'" target="_blank" rel="noopener" style="color:#4fc3f7;font-weight:700;text-decoration:underline;font-size:.78rem">📍 '+esc(gpsVal)+'</a>'
-      : (gpsVal ? esc(gpsVal) : '—');
+    const gpsVal = (row.gps || row.street_location || '').trim();
+    const cleanGps = gpsVal.replace(/^📍\s*/, '');
+    const gpsLink = (cleanGps && cleanGps !== '—' && cleanGps.includes(','))
+      ? '<a href="https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(cleanGps)+'" target="_blank" rel="noopener" style="color:#38bdf8;font-weight:700;text-decoration:underline;font-size:.78rem">📍 '+esc(cleanGps)+'</a>'
+      : (cleanGps ? esc(cleanGps) : '—');
+
+    var recDate = row.recording_date || (document.getElementById('recordDate')&&document.getElementById('recordDate').value.trim()) || new Date().toLocaleDateString('en-GB');
+    var mandoob = row.recorder_name || (document.getElementById('recorderName')&&document.getElementById('recorderName').value.trim()) || '';
+    var street = row.street_name || (document.getElementById('streetName')&&document.getElementById('streetName').value.trim()) || '';
+    var district = row.district_name || (document.getElementById('districtName')&&document.getElementById('districtName').value.trim()) || '';
 
     tr.innerHTML=
       '<td class="td-plate td-edit" contenteditable="true" onblur="editCell('+i+',\'full_plate\',this.textContent)">'+esc(plateVal)+'</td>'
-      +'<td class="td-gps" contenteditable="true" onblur="editCell('+i+',\'gps\',this.textContent)">'+gpsLink+'</td>'
-      +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'district_name\',this.textContent)">'+esc(row.district_name||'')+'</td>'
-      +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'street_name\',this.textContent)">'+esc(row.street_name||'')+'</td>'
-      +'<td class="td-edit td-locdetails" style="font-size:.78rem;color:var(--dim2)" contenteditable="true" onblur="editCell('+i+',\'notes\',this.textContent)">'+esc(row.notes||row.location_details||'')+'</td>'
       +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'vehicle_type\',this.textContent)">'+esc(row.vehicle_type||'')+'</td>'
-      +'<td class="td-edit td-locdetails" contenteditable="true" onblur="editCell('+i+',\'street_location\',this.textContent)">'+esc(streetLoc||'—')+'</td>'
+      +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'notes\',this.textContent)">'+esc(row.notes||row.location_details||'')+'</td>'
+      +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'street_name\',this.textContent)">'+esc(street)+'</td>'
+      +'<td class="td-gps">'+gpsLink+'</td>'
+      +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'district_name\',this.textContent)">'+esc(district)+'</td>'
+      +'<td class="td-edit" style="font-family:var(--mono);font-size:.78rem" contenteditable="true" onblur="editCell('+i+',\'recording_date\',this.textContent)">'+esc(recDate)+'</td>'
+      +'<td class="td-edit" contenteditable="true" onblur="editCell('+i+',\'recorder_name\',this.textContent)">'+esc(mandoob)+'</td>'
       +'<td><button class="del-row" onclick="deleteRow('+i+')">✕</button></td>';
     body.appendChild(tr);
   });
@@ -4840,15 +4938,25 @@ function renderCheckSessionTable(){
     var row=checkSessionRows[ri];
     var i=ri;
     var tr=document.createElement('tr');
+    var gpsVal = (row.gps || '').trim().replace(/^📍\s*/, '');
+    var gpsLink = (gpsVal && gpsVal !== '—' && gpsVal.includes(','))
+      ? '<a href="https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(gpsVal)+'" target="_blank" rel="noopener" style="color:#38bdf8;font-weight:700;text-decoration:underline;font-size:.78rem">📍 '+esc(gpsVal)+'</a>'
+      : (gpsVal ? esc(gpsVal) : '—');
+
+    var recDate = row.recording_date || (document.getElementById('checkSessionDefaultDate')&&document.getElementById('checkSessionDefaultDate').value.trim()) || new Date().toLocaleDateString('en-GB');
+    var mandoob = row.recorder_name || (document.getElementById('checkSessionDefaultRecorder')&&document.getElementById('checkSessionDefaultRecorder').value.trim()) || '';
+    var street = row.street_name || (document.getElementById('checkSessionDefaultStreet')&&document.getElementById('checkSessionDefaultStreet').value.trim()) || '';
+    var district = row.district_name || (document.getElementById('checkSessionDefaultDistrict')&&document.getElementById('checkSessionDefaultDistrict').value.trim()) || '';
+
     tr.innerHTML=
       '<td class="td-plate td-edit" contenteditable="true" onblur="editCheckSessionCell('+i+',\'full_plate\',this.textContent)">'+esc(row.full_plate||row.plate||'')+'</td>'
-      +'<td class="td-gps">'+(row.gps&&row.gps.trim()&&row.gps!=='\u2014'?'<a href="https://www.google.com/maps?q='+encodeURIComponent(row.gps.trim())+'" target="_blank" rel="noopener" style="color:#4fc3f7;text-decoration:underline;font-size:.78rem">'+esc(row.gps.trim())+'</a>':'\u2014')+'</td>'
-      +'<td class="td-edit" style="font-family:var(--mono);font-size:.78rem" contenteditable="true" onblur="editCheckSessionCell('+i+',\'recording_date\',this.textContent)">'+esc(row.recording_date||'')+'</td>'
-      +'<td class="td-edit" contenteditable="true" onblur="editCheckSessionCell('+i+',\'district_name\',this.textContent)">'+esc(row.district_name||'')+'</td>'
-      +'<td class="td-edit" contenteditable="true" onblur="editCheckSessionCell('+i+',\'street_name\',this.textContent)">'+esc(row.street_name||'')+'</td>'
-      +'<td class="td-edit om-xls-col-notes" contenteditable="true" onblur="editCheckSessionCell('+i+',\'notes\',this.textContent)">'+esc(row.notes||row.location_details||'')+'</td>'
       +'<td class="td-edit" contenteditable="true" onblur="editCheckSessionCell('+i+',\'vehicle_type\',this.textContent)">'+esc(row.vehicle_type||'')+'</td>'
-      +'<td class="td-edit" contenteditable="true" onblur="editCheckSessionCell('+i+',\'recorder_name\',this.textContent)">'+esc(row.recorder_name||'')+'</td>'
+      +'<td class="td-edit om-xls-col-notes" contenteditable="true" onblur="editCheckSessionCell('+i+',\'notes\',this.textContent)">'+esc(row.notes||row.location_details||'')+'</td>'
+      +'<td class="td-edit" contenteditable="true" onblur="editCheckSessionCell('+i+',\'street_name\',this.textContent)">'+esc(street)+'</td>'
+      +'<td class="td-gps">'+gpsLink+'</td>'
+      +'<td class="td-edit" contenteditable="true" onblur="editCheckSessionCell('+i+',\'district_name\',this.textContent)">'+esc(district)+'</td>'
+      +'<td class="td-edit" style="font-family:var(--mono);font-size:.78rem" contenteditable="true" onblur="editCheckSessionCell('+i+',\'recording_date\',this.textContent)">'+esc(recDate)+'</td>'
+      +'<td class="td-edit" contenteditable="true" onblur="editCheckSessionCell('+i+',\'recorder_name\',this.textContent)">'+esc(mandoob)+'</td>'
       +'<td><button class="del-row" onclick="deleteCheckSessionRow('+i+')">\u2715</button></td>';
     body.appendChild(tr);
   }
@@ -5811,6 +5919,8 @@ function openInitialAppPage(){
 
     init.headers=new Headers(init.headers||{});
     if(!init.headers.get('X-Device-Id')) init.headers.set('X-Device-Id', getDeviceId());
+    const curTok = localStorage.getItem('auth_token') || localStorage.getItem('access_token');
+    if(curTok && !init.headers.get('Authorization')) init.headers.set('Authorization', 'Bearer ' + curTok);
     let res=await _fetch(input,init);
     if(res.status===401){
       try{
@@ -6016,6 +6126,7 @@ function openInitialAppPage(){
         return;
       }
       setSession(true);
+      if(j.token) localStorage.setItem('auth_token', j.token);
       localStorage.setItem('auth_is_admin', j.is_admin===true?'1':'0');
       localStorage.setItem('auth_user_name', j.display_name || j.username || '');
       localStorage.setItem('auth_plan_name', j.plan_name || 'فترة تجريبية مجانية');
@@ -6102,8 +6213,36 @@ function openInitialAppPage(){
   };
 
   window.switchPage=function(p){
+    if(p==='history'){
+      const appHeader=document.getElementById('appHeader'); if(appHeader) appHeader.style.display='';
+      ['tafrigh','field','check','gmaps','admin','history'].forEach(n=>{
+        const el=document.getElementById('page'+n.charAt(0).toUpperCase()+n.slice(1));
+        if(el) el.style.display=(n==='history'?'':'none');
+      });
+      ['navTafrigh','navField','navCheck','navGmaps','navAdmin','navHistory'].forEach(id=>{
+        const b=document.getElementById(id); if(b) b.classList.toggle('active',id==='navHistory');
+      });
+      if(typeof updateHistoryCounts==='function') updateHistoryCounts();
+      if(typeof renderCurrentHistoryTab==='function') renderCurrentHistoryTab();
+      return;
+    }
     if(p==='admin' && localStorage.getItem('auth_is_admin')!=='1'){
-      if(typeof oldSwitch==='function') oldSwitch('field');
+      var pw = prompt('لوحة الإدارة محمية — أدخل كلمة مرور مدير النظام:');
+      if(pw === null) return;
+      fetch('/auth/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'admin', password: pw})
+      }).then(r=>r.json()).then(j=>{
+        if(j.is_admin === true){
+          localStorage.setItem('auth_is_admin', '1');
+          if(j.token) localStorage.setItem('auth_token', j.token);
+          if(typeof applyAdminNavVisibility==='function') applyAdminNavVisibility();
+          window.switchPage('admin');
+        } else {
+          alert('كلمة المرور غير صحيحة');
+        }
+      }).catch(()=>{ alert('تعذر التحقق من كلمة المرور'); });
       return;
     }
     if(p==='admin'){
@@ -7594,39 +7733,59 @@ function openInitialAppPage(){
 
   devInput.value=getDeviceId();
   async function probeAuth(){
+    const savedToken = localStorage.getItem('auth_token') || localStorage.getItem('access_token') || '';
     const meInit = {
       credentials: 'include',
-      headers: {'X-Device-Id': getDeviceId()},
+      headers: {
+        'X-Device-Id': getDeviceId(),
+        'Authorization': savedToken ? ('Bearer ' + savedToken) : ''
+      },
     };
     try{
       let r=await _fetch('/auth/me', meInit);
-      if(r.status===401){
+      if(r.status===401 && savedToken){
         try{
           await refreshToken();
+          const refreshedToken = localStorage.getItem('auth_token') || savedToken;
+          meInit.headers['Authorization'] = 'Bearer ' + refreshedToken;
           r=await _fetch('/auth/me', meInit);
         }catch(_){}
       }
       const j=await r.json().catch(function(){ return {}; });
       if(r.ok){
+        // Verify subscription expiry
+        if(j.subscription_expired === true){
+          alert('⚠ انتهت فترة اشتراكك — يرجى التواصل مع الإدارة لتجديد الاشتراك.');
+        }
         setSession(true);
         if(typeof j.is_admin==='boolean') localStorage.setItem('auth_is_admin', j.is_admin?'1':'0');
+        if(j.token) localStorage.setItem('auth_token', j.token);
+        if(j.username) localStorage.setItem('auth_user_name', j.display_name || j.username);
+        if(j.plan_name) localStorage.setItem('auth_plan_name', j.plan_name);
+        if(j.subscription_end) localStorage.setItem('auth_sub_end', j.subscription_end);
+        if(j.rows_limit) localStorage.setItem('auth_rows_limit', String(j.rows_limit));
+        
         if(typeof applyAdminNavVisibility==='function') applyAdminNavVisibility();
+        if(typeof updateDelegatePlanUI==='function') updateDelegatePlanUI();
         showLock(false);
         if(typeof openInitialAppPage==='function') openInitialAppPage();
         startProactiveRefresh();
         startPresenceHeartbeat();
         await syncAuthProfile();
-        try{
-          if(typeof omFetchCheckCapabilities==='function') await omFetchCheckCapabilities();
-        }catch(_){}
       }else{
         clearTokens();
         showLock(true);
         if(typeof applyAdminNavVisibility==='function') applyAdminNavVisibility();
       }
     }catch(_e){
-      clearTokens();
-      showLock(true);
+      // Keep offline session if token exists
+      if(savedToken && localStorage.getItem(AUTH_SESSION)==='1'){
+        showLock(false);
+        if(typeof openInitialAppPage==='function') openInitialAppPage();
+      } else {
+        clearTokens();
+        showLock(true);
+      }
       if(typeof applyAdminNavVisibility==='function') applyAdminNavVisibility();
     }
   }
@@ -7850,6 +8009,377 @@ function openInitialAppPage(){
   };
 
 })();
+</script>
+
+
+<!-- Floating WhatsApp Support Button -->
+<a id="waFloatBtn" class="wa-float-btn" href="https://api.whatsapp.com/send?phone=966500000000&text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D9%8B%D8%8C%20%D8%A3%D8%AD%D8%AA%D8%A7%D8%AC%20%D9%85%D8%B3%D8%A7%D8%B9%D8%AF%D8%A9%20%D9%81%D9%8A%20%D8%AA%D8%B7%D8%A8%D9%8A%D9%82%20%D8%A8%D8%A7%D8%B1%D9%82" target="_blank" rel="noopener" title="تواصل مع الدعم الفني">
+  <span>💬</span> <span>الدعم الفني (واتساب)</span>
+</a>
+
+
+<script>
+// ── History Management (3-Tab History: Check, Record, FastMatch) ──
+let currentHistoryTab = 'check';
+
+function getHistoryStorageKey(type){
+  return 'bareq_hist_' + type + '_v1';
+}
+
+function saveToHistory(type, sessionName, rows){
+  if(!Array.isArray(rows) || !rows.length) return;
+  try{
+    const key = getHistoryStorageKey(type);
+    const raw = localStorage.getItem(key);
+    let history = raw ? JSON.parse(raw) : [];
+    if(!Array.isArray(history)) history = [];
+    
+    const session = {
+      id: 'sess_' + Date.now(),
+      name: sessionName || ('جلسة ' + new Date().toLocaleString('ar-EG')),
+      timestamp: new Date().toISOString(),
+      rows: rows,
+      count: rows.length
+    };
+    
+    history.unshift(session);
+    // Keep max 50 sessions
+    if(history.length > 50) history = history.slice(0, 50);
+    localStorage.setItem(key, JSON.stringify(history));
+    updateHistoryCounts();
+  }catch(e){
+    console.error('saveToHistory error:', e);
+  }
+}
+
+function updateHistoryCounts(){
+  ['check', 'record', 'farz'].forEach(function(t){
+    try{
+      const raw = localStorage.getItem(getHistoryStorageKey(t));
+      const list = raw ? JSON.parse(raw) : [];
+      let totalRows = 0;
+      if(Array.isArray(list)){
+        list.forEach(function(s){ totalRows += (s.rows ? s.rows.length : (s.count || 0)); });
+      }
+      const el = document.getElementById('histCnt' + t.charAt(0).toUpperCase() + t.slice(1));
+      if(el) el.textContent = totalRows;
+    }catch(_){}
+  });
+}
+
+function switchHistoryTab(tab){
+  currentHistoryTab = tab;
+  ['Check', 'Record', 'Farz'].forEach(function(t){
+    const el = document.getElementById('histTab' + t);
+    if(el) el.classList.toggle('sel', t.toLowerCase() === tab);
+  });
+  renderCurrentHistoryTab();
+}
+
+function renderCurrentHistoryTab(){
+  const body = document.getElementById('historyTableBody');
+  if(!body) return;
+  body.innerHTML = '';
+  
+  const key = getHistoryStorageKey(currentHistoryTab);
+  let sessions = [];
+  try{
+    const raw = localStorage.getItem(key);
+    sessions = raw ? JSON.parse(raw) : [];
+  }catch(_){}
+  
+  const search = (document.getElementById('histSearchIn')?.value || '').trim().toLowerCase();
+  
+  let allRows = [];
+  sessions.forEach(function(sess){
+    const sRows = sess.rows || [];
+    sRows.forEach(function(r){
+      allRows.push(Object.assign({}, r, { _session_name: sess.name, _session_time: sess.timestamp }));
+    });
+  });
+  
+  if(search){
+    allRows = allRows.filter(function(r){
+      return Object.values(r).some(function(v){ return String(v||'').toLowerCase().includes(search); });
+    });
+  }
+  
+  if(!allRows.length){
+    body.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:1.5rem;color:var(--dim2)">لا توجد بيانات محفوظة في هذا السجل بعد.</td></tr>';
+    return;
+  }
+  
+  allRows.forEach(function(row, idx){
+    const tr = document.createElement('tr');
+    const plateVal = row.full_plate || row.plate || '';
+    const gpsVal = (row.gps || '').trim().replace(/^📍\s*/, '');
+    const gpsLink = (gpsVal && gpsVal !== '—' && gpsVal.includes(','))
+      ? '<a href="https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(gpsVal) + '" target="_blank" rel="noopener" style="color:#38bdf8;font-weight:700;text-decoration:underline;font-size:.78rem">📍 ' + esc(gpsVal) + '</a>'
+      : (gpsVal ? esc(gpsVal) : '—');
+      
+    const statusHtml = row.found === true
+      ? '<span style="color:#22c55e;font-weight:800">✔ مطابق</span>'
+      : (row.found === false ? '<span style="color:#facc15;font-weight:800">— جديد</span>' : '<span style="color:var(--dim2)">مسجل</span>');
+      
+    tr.innerHTML = 
+      '<td>' + (idx + 1) + '</td>'
+      + '<td class="td-plate">' + esc(plateVal) + '</td>'
+      + '<td>' + esc(row.vehicle_type || '—') + '</td>'
+      + '<td>' + esc(row.notes || row.location_details || '—') + '</td>'
+      + '<td>' + esc(row.street_name || '—') + '</td>'
+      + '<td>' + gpsLink + '</td>'
+      + '<td>' + esc(row.district_name || '—') + '</td>'
+      + '<td>' + esc(row.recording_date || (row._session_time ? row._session_time.slice(0,10) : '—')) + '</td>'
+      + '<td>' + esc(row.recorder_name || '—') + '</td>'
+      + '<td>' + statusHtml + '</td>';
+      
+    body.appendChild(tr);
+  });
+}
+
+async function exportCurrentHistoryExcel(){
+  const key = getHistoryStorageKey(currentHistoryTab);
+  let sessions = [];
+  try{
+    const raw = localStorage.getItem(key);
+    sessions = raw ? JSON.parse(raw) : [];
+  }catch(_){}
+  
+  let allRows = [];
+  sessions.forEach(function(s){ allRows = allRows.concat(s.rows || []); });
+  if(!allRows.length){
+    alert('لا توجد بيانات لتصديرها في هذا السجل');
+    return;
+  }
+  
+  const tabNames = { check: 'سجل_تطابق_التشيك', record: 'سجل_تسجيلات_الميدان', farz: 'سجل_نتائج_الفرز' };
+  const sheetName = tabNames[currentHistoryTab] || 'السجل_التاريخي';
+  
+  try{
+    const fd = new FormData();
+    fd.append('rows_json', JSON.stringify(allRows));
+    fd.append('sheet_name', sheetName);
+    const res = await fetch('/api/export-excel', { method: 'POST', body: fd });
+    if(!res.ok) throw new Error('فشل التصدير');
+    triggerDownload(await res.blob(), sheetName + '.xlsx');
+  }catch(e){
+    alert('حدث خطأ أثناء التصدير: ' + e.message);
+  }
+}
+
+function clearCurrentHistoryTab(){
+  const tabNames = { check: 'سجل تطابق التشيك', record: 'سجل تسجيلات الميدان', farz: 'سجل نتائج الفرز' };
+  const name = tabNames[currentHistoryTab] || 'هذا السجل';
+  if(!confirm('هل أنت متأكد من مسح جميع بيانات ' + name + ' من هذا الجهاز؟')) return;
+  localStorage.removeItem(getHistoryStorageKey(currentHistoryTab));
+  updateHistoryCounts();
+  renderCurrentHistoryTab();
+}
+
+// Initialize WhatsApp Number & Sync
+async function initWhatsAppSupport(){
+  try{
+    const res = await fetch('/api/whatsapp');
+    const data = await res.json();
+    if(data && data.whatsapp_number){
+      const cleanNum = data.whatsapp_number.replace(/[^0-9]/g, '');
+      const msg = encodeURIComponent(data.support_message || 'مرحباً الدعم الفني لتطبيق بارق');
+      const el = document.getElementById('waFloatBtn');
+      if(el) el.href = 'https://api.whatsapp.com/send?phone=' + cleanNum + '&text=' + msg;
+    }
+  }catch(_){}
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  updateHistoryCounts();
+  initWhatsAppSupport();
+});
+</script>
+
+
+<script>
+// ── Fast Match & Field Matching Implementation ──
+let omLargeFile = null;
+let omSmallFile = null;
+let omMatchedResults = [];
+
+function omOnCheckFileChange(file, side){
+  if(!file) return;
+  if(side === 'large'){
+    omLargeFile = file;
+    const fn = document.getElementById('omLargeFname');
+    if(fn) fn.textContent = '📎 ' + file.name;
+    const btn = document.getElementById('omRemoveLargeBtn');
+    if(btn) btn.classList.add('show');
+  } else if(side === 'small'){
+    omSmallFile = file;
+    const fn = document.getElementById('omSmallFname');
+    if(fn) fn.textContent = '📎 ' + file.name;
+    const btn = document.getElementById('omRemoveSmallBtn');
+    if(btn) btn.classList.add('show');
+  }
+  
+  const mBtn = document.getElementById('omMatchBtn');
+  if(mBtn) mBtn.disabled = !(omLargeFile && omSmallFile);
+}
+
+function omHandleDropCheck(e, side){
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if(f) omOnCheckFileChange(f, side);
+}
+
+function omRemoveCheckFile(side){
+  if(side === 'large'){
+    omLargeFile = null;
+    const fn = document.getElementById('omLargeFname');
+    if(fn) fn.textContent = '';
+    const btn = document.getElementById('omRemoveLargeBtn');
+    if(btn) btn.classList.remove('show');
+    const inp = document.getElementById('omLargeFileIn');
+    if(inp) inp.value = '';
+  } else if(side === 'small'){
+    omSmallFile = null;
+    const fn = document.getElementById('omSmallFname');
+    if(fn) fn.textContent = '';
+    const btn = document.getElementById('omRemoveSmallBtn');
+    if(btn) btn.classList.remove('show');
+    const inp = document.getElementById('omSmallFileIn');
+    if(inp) inp.value = '';
+  }
+  const mBtn = document.getElementById('omMatchBtn');
+  if(mBtn) mBtn.disabled = !(omLargeFile && omSmallFile);
+}
+
+function omTogglePw(inputId, btn){
+  const inp = document.getElementById(inputId);
+  if(!inp) return;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  btn.textContent = inp.type === 'password' ? '👁' : '🙈';
+}
+
+function omResetCheckDetect(){}
+function omConfirmLargePw(){ alert('تم تأكيد كلمة المرور'); }
+function omOnFarzMatchModeChange(){}
+function omClearSavedFieldMatch(){
+  omMatchedResults = [];
+  const box = document.getElementById('omResultBox');
+  if(box) box.style.display = 'none';
+  const gBox = document.getElementById('omGpsResultBox');
+  if(gBox) gBox.style.display = 'none';
+}
+
+async function omRunMatch(){
+  if(!omLargeFile || !omSmallFile){
+    alert('يرجى اختيار الملف الكبير وقائمة البحث (الملف الصغير)');
+    return;
+  }
+  
+  const btn = document.getElementById('omMatchBtn');
+  if(btn) { btn.disabled = true; btn.textContent = '⏳ جاري الفرز والمطابقة السريعة …'; }
+  
+  try{
+    const fd = new FormData();
+    fd.append('large_file', omLargeFile);
+    fd.append('small_file', omSmallFile);
+    const pw = (document.getElementById('omLargePw')?.value || '').trim();
+    if(pw) fd.append('large_pw', pw);
+    
+    const myLat = document.getElementById('omGpsMyLat')?.value || '24.7136';
+    const myLon = document.getElementById('omGpsMyLon')?.value || '46.6753';
+    fd.append('my_lat', myLat);
+    fd.append('my_lon', myLon);
+    
+    const res = await fetch('/api/fast-match', { method: 'POST', body: fd });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || 'فشل الفرز والمطابقة');
+    
+    const matched = data.matched_rows || [];
+    omMatchedResults = matched;
+    
+    // Update stats
+    const rM = document.getElementById('omRMatched');
+    if(rM) rM.textContent = data.matched_count || matched.length;
+    const rP = document.getElementById('omRPlates');
+    if(rP) rP.textContent = data.unique_matched_count || matched.length;
+    const rU = document.getElementById('omRUnmatched');
+    if(rU) rU.textContent = data.unmatched_count || 0;
+    
+    const rBox = document.getElementById('omResultBox');
+    if(rBox) rBox.style.display = 'block';
+    
+    const dlBtn = document.getElementById('omDlBtn');
+    if(dlBtn) dlBtn.style.display = 'inline-block';
+    
+    // Render preview table
+    const tbody = document.getElementById('omMatchTbody');
+    const thead = document.getElementById('omMatchThead');
+    const tblWrap = document.getElementById('omMatchTableWrap');
+    if(tblWrap) tblWrap.style.display = 'block';
+    
+    if(thead){
+      thead.innerHTML = '<tr><th>اللوحة</th><th>النوع</th><th>الملاحظات</th><th>الشارع</th><th>الموقع</th><th>الحي</th><th>التاريخ</th><th>المندوب</th></tr>';
+    }
+    
+    if(tbody){
+      tbody.innerHTML = '';
+      matched.slice(0, 100).forEach(row => {
+        const tr = document.createElement('tr');
+        const plate = row['اللوحة'] || row['رقم اللوحة'] || row['plate'] || '';
+        const vType = row['نوع السيارة'] || row['النوع'] || row['vehicle_type'] || '';
+        const notes = row['ملاحظات'] || row['notes'] || '';
+        const street = row['الشارع'] || row['street_name'] || '';
+        const gps = (row['GPS'] || row['موقع'] || row['gps'] || '').trim().replace(/^📍\s*/, '');
+        const gpsLink = (gps && gps.includes(','))
+          ? '<a href="https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(gps) + '" target="_blank" rel="noopener" style="color:#38bdf8;font-weight:700;text-decoration:underline">📍 ' + esc(gps) + '</a>'
+          : (gps || '—');
+        const district = row['الحي'] || row['district_name'] || '';
+        const date = row['التاريخ'] || row['recording_date'] || '';
+        const mandoob = row['المسجّل'] || row['المندوب'] || row['recorder_name'] || '';
+        
+        tr.innerHTML = 
+          '<td class="td-plate">' + esc(plate) + '</td>'
+          + '<td>' + esc(vType) + '</td>'
+          + '<td>' + esc(notes) + '</td>'
+          + '<td>' + esc(street) + '</td>'
+          + '<td>' + gpsLink + '</td>'
+          + '<td>' + esc(district) + '</td>'
+          + '<td>' + esc(date) + '</td>'
+          + '<td>' + esc(mandoob) + '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+    
+    // Save to History
+    if(typeof saveToHistory === 'function'){
+      saveToHistory('farz', 'فرز_' + (omSmallFile?.name || 'قائمة'), matched);
+    }
+    
+    alert('✅ تم اكتمال الفرز والمطابقة بنجاح! تم العثور على ' + matched.length + ' صف مطابق.');
+  }catch(e){
+    alert('❌ خطأ أثناء المطابقة: ' + e.message);
+  }finally{
+    if(btn) { btn.disabled = false; btn.textContent = 'Match — 🔍 مطابقة وتصدير Excel'; }
+  }
+}
+
+async function omOpenExcelResult(){
+  if(!omMatchedResults.length){ alert('لا توجد نتائج للتصدير'); return; }
+  try{
+    const fd = new FormData();
+    fd.append('rows_json', JSON.stringify(omMatchedResults));
+    fd.append('sheet_name', 'نتائج_الفرز');
+    const res = await fetch('/api/export-excel', { method: 'POST', body: fd });
+    if(!res.ok) throw new Error('فشل التصدير');
+    triggerDownload(await res.blob(), 'نتائج_الفرز.xlsx');
+  }catch(e){
+    alert('خطأ في التصدير: ' + e.message);
+  }
+}
+
+function omDownloadGpsResult(){
+  omOpenExcelResult();
+}
 </script>
 
 </body>
