@@ -2070,10 +2070,16 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                             partial_history = list(session.partial_history)
                             session.clear_turn()
                         else:
-                            audio_np = None
                             all_pcm_bytes = b"".join(legacy_pcm_chunks)
                             legacy_pcm_chunks.clear()
                             partial_history = []
+                            if all_pcm_bytes:
+                                try:
+                                    audio_np = np.frombuffer(all_pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                                except Exception:
+                                    audio_np = None
+                            else:
+                                audio_np = None
 
                         if not all_pcm_bytes or len(all_pcm_bytes) < 3200:  # < 0.1s
                             continue
@@ -2107,24 +2113,9 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                             print(f"[AUDIO RECEIVED] bytes={pcm_len} | duration={audio_duration:.2f}s | rms={rms_val:.4f} | peak={peak_val:.4f}")
                             print("=" * 60)
 
-                            # Allow quiet mobile-mic speech to reach ASR normalization.
-                            if rms_val < 0.00008 or peak_val < 0.0003:
-                                print("[AUDIO WARNING] Audio RMS is near zero (silence/mic issue). Skipping ASR.")
-                                await websocket.send_json({
-                                    "type": "debug_pipeline",
-                                    "data": {
-                                        "raw_asr": "", "normalized": "", "decoded_plate": "",
-                                        "valid": False, "confidence": 0.0, "latency_ms": 0,
-                                        "engine": "silence", "audio_duration_s": round(audio_duration, 2),
-                                        "rms": round(rms_val, 6), "peak": round(peak_val, 6)
-                                    }
-                                })
-                                await websocket.send_json({
-                                    "type": "live_transcript",
-                                    "data": "⚠️ لم يتم التقاط صوت واضح من الميكروفون (صمت)",
-                                    "final": False
-                                })
-                                return
+                            # Audio stats computed, forward directly to active cloud ASR engines
+                            if rms_val < 0.000001 and peak_val < 0.00001:
+                                print("[AUDIO WARNING] Buffer is completely flat zero.")
 
                             # Show immediately that the server stored the turn; inference can take longer.
                             await websocket.send_json({
