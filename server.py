@@ -89,6 +89,7 @@ _FB_GEMINI_1 = _unxor55("76661976550f6579017e0441615b5602047305596f5e7e715f557a5
 _FB_GEMINI_2 = _unxor55("76661976550f6579017c565b7d1a786d5970077c666545017d726e7c7203055b5073555f0f7d01556d425179026d4061591a5b7e66")
 _FB_GROQ = _unxor55("50445c686343044f50545c720662014672737c795551737c6070534e5504716e606059587347760e7d75645444045478665f407358466e5e")
 _FB_DEEPGRAM = _unxor55("060500000f0202520e00510255510351545501555606535151040f0607550e52530f555156060e55")
+_FB_OPENAI = _unxor55("445c1a4745585d1a795c0e06707a54725602067d530e00790f58016802456f5f06604440504163741a62650355626f7456764d475c555e5055035c427953766754684e7e7a790f4d01010203795c6e5979566304755b555c717d7178006758404e07626f4d05526d74425c02416341687e5879687d5068045e065d011a0e024f6447767c027645501a7d666840404d40734179676e474e5a7871684260677c537d557e76")
 
 default_config = {
     "gemini_api_key": _FB_GEMINI_1,
@@ -97,6 +98,7 @@ default_config = {
     "groq_api_key": _FB_GROQ,
     "groq_keys": [_FB_GROQ],
     "deepgram_api_key": _FB_DEEPGRAM,
+    "openai_api_key": _FB_OPENAI,
     "gmaps_api_key": "AIzaSyD6MFjNe3_C0AZygsdKj3loxzw77IxTssQ",
     "ors_api_key": "",
     "gemini_model": "gemini-3.6-flash",
@@ -126,6 +128,8 @@ def load_config():
         cfg["groq_keys"] = [_FB_GROQ]
     if not cfg.get("deepgram_api_key"):
         cfg["deepgram_api_key"] = _FB_DEEPGRAM
+    if not cfg.get("openai_api_key"):
+        cfg["openai_api_key"] = _FB_OPENAI
 
     # Environment variables override (for Railway / Cloud deployments)
     if os.environ.get("GEMINI_API_KEY"):
@@ -136,6 +140,8 @@ def load_config():
         cfg["groq_keys"] = [os.environ["GROQ_API_KEY"]]
     if os.environ.get("DEEPGRAM_API_KEY"):
         cfg["deepgram_api_key"] = os.environ["DEEPGRAM_API_KEY"]
+    if os.environ.get("OPENAI_API_KEY"):
+        cfg["openai_api_key"] = os.environ["OPENAI_API_KEY"]
     if os.environ.get("GMAPS_API_KEY"):
         cfg["gmaps_api_key"] = os.environ["GMAPS_API_KEY"]
     if os.environ.get("ADMIN_PASSWORD"):
@@ -949,6 +955,36 @@ def _call_deepgram(cfg: dict, audio_data: bytes) -> list:
         print(f"[Deepgram Error] {e}")
     return []
 
+def _call_openai_whisper(cfg: dict, audio_data: bytes) -> list:
+    """Transcription via OpenAI Whisper API"""
+    oa_key = cfg.get("openai_api_key", "")
+    if not oa_key:
+        return []
+    try:
+        mime_type, ext = _detect_audio_info(audio_data)
+        filename = f"speech.{ext}"
+        headers = {"Authorization": f"Bearer {oa_key}"}
+        files = {"file": (filename, audio_data, mime_type)}
+        data = {
+            "model": "whisper-1",
+            "language": "ar",
+            "temperature": "0.0",
+            "prompt": "تسجيل صوتي لتسميع لوحات سيارات سعودية: ألف باء تاء ثاء جيم حاء خاء دال ذال راء زين سين شين صاد ضاد طاء ظاء عين غين فاء قاف كاف لام ميم نون هاء واو ياء 0 1 2 3 4 5 6 7 8 9 شارع حي ملاحظات"
+        }
+        resp = requests.post("https://api.openai.com/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=12)
+        if resp.status_code == 200:
+            transcribed = resp.json().get("text", "")
+            if transcribed:
+                print(f"[OpenAI Whisper OK] Transcribed: '{transcribed}'")
+                plates = _parse_plates_from_arabic_text(transcribed)
+                if plates:
+                    return plates
+        else:
+            print(f"[OpenAI Whisper] HTTP {resp.status_code}: {resp.text[:120]}")
+    except Exception as e:
+        print(f"[OpenAI Whisper Error] {e}")
+    return []
+
 def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: str = "rest") -> dict:
     """Call Gemini API with automatic key AND verified model rotation on 429/503/404."""
     import time
@@ -1125,6 +1161,16 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
             return dg_plates
     except Exception as dge:
         print(f"[Dual-Engine Deepgram error] {dge}")
+
+    # 4. Fallback to OpenAI Whisper-1 API
+    try:
+        oa_plates = _call_openai_whisper(cfg, audio_data)
+        if oa_plates:
+            oa_plates = _dedup_plates(oa_plates)
+            print(f"[OpenAI Fallback OK] Extracted: {len(oa_plates)} plates")
+            return oa_plates
+    except Exception as oae:
+        print(f"[Dual-Engine OpenAI error] {oae}")
 
     return []
 
