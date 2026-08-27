@@ -87,7 +87,8 @@ def _unxor55(h: str) -> str:
 
 _FB_GEMINI_1 = _unxor55("76661976550f6579017e0441615b5602047305596f5e7e715f557a55556876465b53417b046162737642675a647d40654d704e5e76")
 _FB_GEMINI_2 = _unxor55("76661976550f6579017c565b7d1a786d5970077c666545017d726e7c7203055b5073555f0f7d01556d425179026d4061591a5b7e66")
-_FB_GROQ = _unxor55("50445c680341075376667162620e5c0f62477d63045f7f666070534e5504716e564741066d477e6264640656540065674e477a724d074607")
+_FB_GROQ = _unxor55("50445c686343044f50545c720662014672737c795551737c6070534e5504716e606059587347760e7d75645444045478665f407358466e5e")
+_FB_DEEPGRAM = _unxor55("060500000f0202520e00510255510351545501555606535151040f0607550e52530f555156060e55")
 
 default_config = {
     "gemini_api_key": _FB_GEMINI_1,
@@ -95,6 +96,7 @@ default_config = {
     "gemini_live_keys": [_FB_GEMINI_1, _FB_GEMINI_2],
     "groq_api_key": _FB_GROQ,
     "groq_keys": [_FB_GROQ],
+    "deepgram_api_key": _FB_DEEPGRAM,
     "gmaps_api_key": "AIzaSyD6MFjNe3_C0AZygsdKj3loxzw77IxTssQ",
     "ors_api_key": "",
     "gemini_model": "gemini-3.6-flash",
@@ -122,6 +124,8 @@ def load_config():
         cfg["groq_api_key"] = _FB_GROQ
     if not cfg.get("groq_keys"):
         cfg["groq_keys"] = [_FB_GROQ]
+    if not cfg.get("deepgram_api_key"):
+        cfg["deepgram_api_key"] = _FB_DEEPGRAM
 
     # Environment variables override (for Railway / Cloud deployments)
     if os.environ.get("GEMINI_API_KEY"):
@@ -130,6 +134,8 @@ def load_config():
     if os.environ.get("GROQ_API_KEY"):
         cfg["groq_api_key"] = os.environ["GROQ_API_KEY"]
         cfg["groq_keys"] = [os.environ["GROQ_API_KEY"]]
+    if os.environ.get("DEEPGRAM_API_KEY"):
+        cfg["deepgram_api_key"] = os.environ["DEEPGRAM_API_KEY"]
     if os.environ.get("GMAPS_API_KEY"):
         cfg["gmaps_api_key"] = os.environ["GMAPS_API_KEY"]
     if os.environ.get("ADMIN_PASSWORD"):
@@ -912,6 +918,37 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
             print(f"[Groq Whisper Error] {e}")
     return []
 
+def _call_deepgram(cfg: dict, audio_data: bytes) -> list:
+    """Ultra-fast Arabic transcription via Deepgram Nova-3 API"""
+    dg_key = cfg.get("deepgram_api_key", "")
+    if not dg_key:
+        return []
+    try:
+        mime_type, _ = _detect_audio_info(audio_data)
+        headers = {
+            "Authorization": f"Token {dg_key}",
+            "Content-Type": mime_type
+        }
+        url = "https://api.deepgram.com/v1/listen?model=nova-3&language=ar&smart_format=true"
+        resp = requests.post(url, headers=headers, data=audio_data, timeout=8)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            channels = res_json.get("results", {}).get("channels", [])
+            if channels:
+                alts = channels[0].get("alternatives", [])
+                if alts:
+                    transcribed = alts[0].get("transcript", "").strip()
+                    if transcribed:
+                        print(f"[Deepgram OK] Transcribed: '{transcribed}'")
+                        plates = _parse_plates_from_arabic_text(transcribed)
+                        if plates:
+                            return plates
+        else:
+            print(f"[Deepgram] HTTP {resp.status_code}: {resp.text[:120]}")
+    except Exception as e:
+        print(f"[Deepgram Error] {e}")
+    return []
+
 def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: str = "rest") -> dict:
     """Call Gemini API with automatic key AND verified model rotation on 429/503/404."""
     import time
@@ -1078,6 +1115,16 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
             return groq_plates
     except Exception as ge:
         print(f"[Dual-Engine Groq error] {ge}")
+
+    # 3. Fallback to Deepgram Nova-3 API
+    try:
+        dg_plates = _call_deepgram(cfg, audio_data)
+        if dg_plates:
+            dg_plates = _dedup_plates(dg_plates)
+            print(f"[Deepgram Fallback OK] Extracted: {len(dg_plates)} plates")
+            return dg_plates
+    except Exception as dge:
+        print(f"[Dual-Engine Deepgram error] {dge}")
 
     return []
 
