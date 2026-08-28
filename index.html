@@ -4223,17 +4223,42 @@ function _appendPlatesWithDistrict(plates, when, gpsPoints){
   const dn=_districtFromInput();
   const recName=(document.getElementById('recorderName')?document.getElementById('recorderName').value:'').trim();
 
-  // Compute GPS from collected points (midpoint strategy)
-  let midGps = '';
+  // Use FIRST GPS point (recording start location) — this is the agent's actual position
+  let recGps = '';
+  let recGpsLink = '';
   if (Array.isArray(gpsPoints) && gpsPoints.length > 0) {
-    const midIdx = Math.floor((gpsPoints.length - 1) / 2);
-    const pt = gpsPoints[midIdx];
-    if (pt && pt.lat && (pt.lng || pt.lon)) {
-      const ptLng = pt.lng || pt.lon;
-      midGps = `${Number(pt.lat).toFixed(6)},${Number(ptLng).toFixed(6)}`;
-    } else if (typeof pt === 'string') {
-      midGps = pt;
+    // Take first valid GPS point (captured at recording start)
+    for (let gi = 0; gi < gpsPoints.length; gi++) {
+      const pt = gpsPoints[gi];
+      if (pt && pt.lat && (pt.lng || pt.lon)) {
+        const ptLng = pt.lng || pt.lon;
+        recGps = `${Number(pt.lat).toFixed(6)},${Number(ptLng).toFixed(6)}`;
+        recGpsLink = `https://www.google.com/maps/dir/?api=1&destination=${recGps}`;
+        break;
+      } else if (typeof pt === 'string' && pt.includes(',')) {
+        recGps = pt.trim();
+        recGpsLink = `https://www.google.com/maps/dir/?api=1&destination=${recGps}`;
+        break;
+      }
     }
+  }
+
+  // If no GPS from recording, try to get current position now
+  if (!recGps && navigator.geolocation) {
+    try {
+      navigator.geolocation.getCurrentPosition(function(pos) {
+        const lat = pos.coords.latitude.toFixed(6);
+        const lng = pos.coords.longitude.toFixed(6);
+        const gpsStr = lat + ',' + lng;
+        // Update all rows that were just added with empty GPS
+        for (let ri = tableRows.length - list.length; ri < tableRows.length; ri++) {
+          if (tableRows[ri] && (!tableRows[ri].gps || tableRows[ri].gps === '—')) {
+            tableRows[ri].gps = gpsStr;
+          }
+        }
+        saveTable(); renderTable();
+      }, function(){}, {enableHighAccuracy: true, timeout: 8000, maximumAge: 5000});
+    } catch(e) {}
   }
 
   list.forEach(p=>{
@@ -4245,8 +4270,8 @@ function _appendPlatesWithDistrict(plates, when, gpsPoints){
     // notes: use what Gemini found (from voice "ملاحظات...")
     p.notes = (p.notes || p.location_details || '').trim();
     p.vehicle_type = (p.vehicle_type || '').trim();
-    // GPS: use per-plate GPS if provided by server, else use midpoint from recording
-    p.gps = (p.gps || midGps || '').trim();
+    // GPS: use per-plate GPS if provided by server, else use recording start position
+    p.gps = (p.gps || recGps || '').trim();
     // street_location: voice-extracted location description
     p.street_location = (p.street_location || '').trim();
     p.recorder_name = (p.recorder_name || recName || '').trim();
