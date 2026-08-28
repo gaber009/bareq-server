@@ -752,35 +752,140 @@ def _get_next_gemini_key(cfg: dict, kind: str = "rest") -> str:
     return keys[idx]
 
 SPATIAL_LETTER_WORDS = [
-    ('ألف', 'أ'), ('الف', 'أ'), ('إلف', 'أ'), ('إليف', 'أ'), ('أليف', 'أ'),
+    # ── Official 17 Saudi Plate Letters ──
+    ('ألف', 'أ'), ('الف', 'أ'), ('إلف', 'أ'), ('إليف', 'أ'), ('أليف', 'أ'), ('آلف', 'أ'), ('اليف', 'أ'),
     ('باء', 'ب'), ('با', 'ب'),
-    ('تاء', 'ت'), ('تا', 'ت'),
-    ('ثاء', 'ث'), ('ثا', 'ث'),
-    ('جيم', 'ج'), ('جا', 'ج'),
     ('حاء', 'ح'), ('حا', 'ح'),
-    ('خاء', 'خ'), ('خا', 'خ'),
     ('دال', 'د'), ('دا', 'د'),
-    ('ذال', 'ذ'), ('ذا', 'ذ'),
     ('راء', 'ر'), ('را', 'ر'),
-    ('زين', 'ز'), ('زاي', 'ز'), ('زا', 'ز'),
     ('سين', 'س'), ('سا', 'س'),
-    ('شين', 'ش'), ('شا', 'ش'),
     ('صاد', 'ص'), ('صا', 'ص'),
-    ('ضاد', 'ض'), ('ضا', 'ض'),
     ('طاء', 'ط'), ('طا', 'ط'),
-    ('ظاء', 'ظ'), ('ظا', 'ظ'),
     ('عين', 'ع'), ('عا', 'ع'),
-    ('غين', 'غ'), ('غا', 'غ'),
-    ('فاء', 'ف'), ('فا', 'ف'),
     ('قاف', 'ق'), ('قيف', 'ق'), ('قا', 'ق'),
     ('كاف', 'ك'), ('كيف', 'ك'), ('كا', 'ك'),
     ('لام', 'ل'), ('لا', 'ل'),
     ('ميم', 'م'), ('ما', 'م'),
     ('نون', 'ن'), ('نا', 'ن'),
-    ('هاء', 'ه'), ('ها', 'ه'), ('هه', 'ه'),
+    ('هاء', 'هـ'), ('ها', 'هـ'), ('هه', 'هـ'),
     ('واو', 'و'),
-    ('ياء', 'ى'), ('يا', 'ى'), ('ي', 'ى')
+    ('ياء', 'ي'), ('يا', 'ي'), ('ى', 'ي'),
+    
+    # ── Phonetic Misrecognitions mapped to closest valid Saudi letters ──
+    ('تاء', 'ب'), ('تا', 'ب'),
+    ('ثاء', 'ب'), ('ثا', 'ب'),
+    ('جيم', 'ح'), ('جا', 'ح'), ('جم', 'ح'),
+    ('خاء', 'ح'), ('خا', 'ح'),
+    ('ذال', 'د'), ('ذا', 'د'),
+    ('زاي', 'ر'), ('زين', 'ر'), ('زا', 'ر'),
+    ('شين', 'س'), ('شا', 'س'),
+    ('ضاد', 'ص'), ('ضا', 'ص'),
+    ('ظاء', 'ط'), ('ظا', 'ط'),
+    ('غين', 'ع'), ('غا', 'ع'),
+    ('فاء', 'ق'), ('فا', 'ق'),
 ]
+
+
+SAUDI_VALID_LETTERS = set("أابحدرسصطعقكلمنههـويى")
+
+STOP_WORDS = {
+    'رقم', 'عين', 'سين', 'حسب', 'دون', 'فاصل', 'لوحة', 'لوحه', 'سيارة', 'سياره',
+    'مركبة', 'مركبه', 'شارع', 'طريق', 'تويوتا', 'هيونداي', 'فورد', 'نيسان', 'باص',
+    'دينا', 'نقل', 'ملاحظة', 'ملاحظات', 'تسجيل', 'تعديل', 'قصدي', 'معليش'
+}
+
+LETTER_CORRECTIONS = {
+    'ت': 'ب', 'ث': 'ب',
+    'ف': 'ق',
+    'ج': 'ح', 'خ': 'ح',
+    'ز': 'ر',
+    'ش': 'س',
+    'ض': 'ص',
+    'ظ': 'ط',
+    'غ': 'ع',
+    'ذ': 'د',
+    'ئ': 'ي', 'ء': 'أ', 'ؤ': 'و', 'ة': 'هـ'
+}
+
+def clean_saudi_plate(raw_plate: str) -> str:
+    """Clean and validate a Saudi license plate string to ensure strictly 3 valid letters and 1-4 digits."""
+    if not raw_plate:
+        return None
+    s = str(raw_plate).strip()
+    s = re.sub(r'[\'\"\[\]\(\)\{\}\-_\.,:;]+', ' ', s)
+    digits_match = re.search(r'(\d+)', s)
+    if not digits_match:
+        return None
+    digits = digits_match.group(1)[:4]
+    
+    letters_part = re.sub(r'\d+', '', s).strip()
+    for sw in STOP_WORDS:
+        if re.sub(r'\s+', '', letters_part) == sw:
+            return None
+            
+    raw_chars = [c for c in letters_part if '\u0600' <= c <= '\u06FF']
+    corrected = []
+    for c in raw_chars:
+        if c in LETTER_CORRECTIONS:
+            corrected.append(LETTER_CORRECTIONS[c])
+        elif c in SAUDI_VALID_LETTERS:
+            corrected.append(c)
+            
+    if len(corrected) < 3:
+        return None
+        
+    l1, l2, l3 = corrected[:3]
+    if l1 in ('ا', 'إ', 'آ'): l1 = 'أ'
+    if l2 in ('ا', 'إ', 'آ'): l2 = 'أ'
+    if l3 in ('ا', 'إ', 'آ'): l3 = 'أ'
+    if l1 == 'ى': l1 = 'ي'
+    if l2 == 'ى': l2 = 'ي'
+    if l3 == 'ى': l3 = 'ي'
+    
+    if (l1 + l2 + l3) in ('رقم', 'عين', 'سين', 'حسب', 'دون', 'نقل', 'باص'):
+        return None
+        
+    return f"{l1} {l2} {l3} {digits}"
+
+def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 120.0, overlap_sec: float = 3.0) -> list[bytes]:
+    """Slice WAV audio bytes into manageable ~2-minute chunks for Gemini Multimodal Audio."""
+    import wave
+    import io
+    if not wav_bytes.startswith(b"RIFF") or len(wav_bytes) < 1000:
+        return [wav_bytes]
+    try:
+        with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            n_frames = wf.getnframes()
+            total_sec = n_frames / framerate
+            if total_sec <= chunk_duration_sec + 5:
+                return [wav_bytes]
+                
+            chunk_frames = int(chunk_duration_sec * framerate)
+            overlap_frames = int(overlap_sec * framerate)
+            step_frames = chunk_frames - overlap_frames
+            
+            chunks = []
+            cur_pos = 0
+            while cur_pos < n_frames:
+                wf.setpos(cur_pos)
+                frames_to_read = min(chunk_frames, n_frames - cur_pos)
+                data = wf.readframes(frames_to_read)
+                out_io = io.BytesIO()
+                with wave.open(out_io, 'wb') as out_wf:
+                    out_wf.setnchannels(n_channels)
+                    out_wf.setsampwidth(sampwidth)
+                    out_wf.setframerate(framerate)
+                    out_wf.writeframes(data)
+                chunks.append(out_io.getvalue())
+                cur_pos += step_frames
+                if n_frames - cur_pos < int(8 * framerate):
+                    break
+            return chunks if chunks else [wav_bytes]
+    except Exception:
+        return [wav_bytes]
 
 def _detect_audio_info(data: bytes) -> tuple[str, str]:
     """Detect actual audio MIME type and extension from binary headers"""
@@ -847,7 +952,7 @@ def _parse_plates_from_arabic_text(text: str) -> list:
     for w, l in SPATIAL_LETTER_WORDS:
         t = re.sub(r'(?<!\w)' + re.escape(w) + r'(?!\w)', l, t)
 
-    # Merge isolated digit sequences (e.g. "1 2 3 4" -> "1234")
+    # Merge isolated digit sequences
     prev = ""
     while prev != t:
         prev = t
@@ -858,39 +963,34 @@ def _parse_plates_from_arabic_text(text: str) -> list:
     parts = corr_pattern.split(t)
     final_plates = []
     
+    # Detect spoken vehicle type
+    v_type = ""
+    v_types = ['كامري', 'يارس', 'كورولا', 'هايلوكس', 'سوناتا', 'النترا', 'اكسنت', 'تورس', 'باترول', 'صني', 'ددسن', 'يوكون', 'تاهو', 'باص', 'دينا', 'نقل', 'شاحنة', 'وايت', 'سطحة', 'دباب', 'جيب', 'تويوتا', 'هيونداي', 'فورد', 'نيسان', 'كيا', 'مازدا', 'جمس', 'شفروليه', 'لكزس', 'مرسيدس', 'ايسوزو', 'ميتسوبيشي', 'سوزوكي', 'شانجان', 'هافال', 'جيلي', 'ام جي']
+    for vt in v_types:
+        if vt in text:
+            v_type = vt
+            break
+            
     for idx, part in enumerate(parts):
-        if not part:
-            continue
-        if corr_pattern.match(part.strip()):
+        if not part or corr_pattern.match(part.strip()):
             continue
         
         is_after_correction = (idx > 0 and bool(corr_pattern.match(parts[idx-1].strip())))
         matches = re.findall(r'([أ-يى]\s*[أ-يى]\s*[أ-يى])\s*(\d{1,4})', part)
         seg_plates = []
         for letters_raw, digits in matches:
-            lets = [c for c in letters_raw if c not in (' ', '\t')]
-            if len(lets) == 3:
-                seg_plates.append({"plate": f"{lets[0]} {lets[1]} {lets[2]} {digits}", "found": True, "vehicle_type": "تويوتا", "notes": ""})
+            cleaned = clean_saudi_plate(f"{letters_raw} {digits}")
+            if cleaned:
+                seg_plates.append({"plate": cleaned, "found": True, "vehicle_type": v_type, "notes": "", "street_name": "", "district_name": ""})
         
         if is_after_correction and seg_plates:
             if final_plates:
-                # Overwrite/replace last plate with the corrected plate
                 final_plates[-1] = seg_plates[0]
                 final_plates.extend(seg_plates[1:])
             else:
                 final_plates.extend(seg_plates)
         else:
             final_plates.extend(seg_plates)
-
-    # If no plates matched with regex, try fallback to plate_decoder if available
-    if not final_plates:
-        try:
-            from plate_decoder import get_decoder
-            dec = get_decoder().decode_final(text)
-            if dec.get("valid") and dec.get("plate"):
-                final_plates.append({"plate": dec["plate"], "found": True, "vehicle_type": "تويوتا", "notes": ""})
-        except Exception:
-            pass
 
     return final_plates
 
@@ -1115,106 +1215,91 @@ def _dedup_plates(plates: list) -> list:
     return result
 
 def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "live") -> list:
-    """High-accuracy transcription: Gemini 3.6/3.5 native audio first, with Groq Whisper fallback"""
-    # 1. Try Gemini Multimodal Audio (Best Arabic phonetic recognition for any spoken letters/numbers)
-    try:
-        mime_type, _ = _detect_audio_info(audio_data)
-        b64_audio = base64.b64encode(audio_data).decode("utf-8")
-        prompt = (
-            "أنت خبير ذكاء اصطناعي فائق الدقة متخصص في تفريغ واستخراج أرقام لوحات السيارات السعودية وبياناتها من الصوت بدقة 100%.\n"
-            "المطلوب منك:\n"
-            "1. استمع للتسجيل كاملاً واستخرج جميع اللوحات المذكورة بدون استثناء.\n"
-            "2. كل لوحة سعودية = 3 حروف عربية مفصولة بمسافات + 1 إلى 4 أرقام (مثال: 'د ب أ 9075').\n"
-            "3. تحويل أسماء الحروف المنطوقة إلى حروف مفردة (دال=د، باء=ب، ألف=أ، واو=و، كاف=ك، قاف=ق...).\n"
-            "4. ⚠️ التمييز الدقيق بين الكاف والقاف — هذا الأهم:\n"
-            "   - (كاف / كيف / كـ) → يُكتب (ك) دائماً\n"
-            "   - (قاف / قيف / قـ / صوت G أو گ في اللهجة السعودية والخليجية) → يُكتب (ق) دائماً\n"
-            "   - مثال: 'دال كاف هاء 3560' → 'د ك هـ 3560' وليس 'د ق هـ'\n"
-            "   - مثال: 'دال قاف هاء 3560' → 'د ق هـ 3560' وليس 'د ك هـ'\n"
-            "5. ⚠️ الأرقام المركبة: اسمع الأرقام كما تُنطق واكتبها كاملة:\n"
-            "   - 'ثلاثة ألفين ومائتين وخمسة وستين' = 3265\n"
-            "   - 'ثلاثة خمسة ستة صفر' = 3560\n"
-            "   - 'ثمانية خمسة ستة خمسة' = 8565\n"
-            "   - لا تخلط الأرقام مع الحروف في نفس الموضع\n"
-            "6. ⚠️ استخراج بيانات إضافية عند ذكرها:\n"
-            "   - إذا قال 'شارع كذا' أو 'طريق كذا' → اكتب اسم الشارع في street_name\n"
-            "   - إذا قال 'حي كذا' أو 'منطقة كذا' → اكتب اسم الحي في district_name\n"
-            "   - إذا قال 'ملاحظات:...' أو 'ملاحظة ...' أو 'فاصل ...' قبل أو بعد اللوحة → اكتب الملاحظات في notes\n"
-            "   - إذا قال موقع مثل 'يمين الشارع'، 'أمام الصيدلية'، 'مواقف'... → اكتب في street_location\n"
-            "   - إذا قال نوع السيارة (تويوتا، هيونداي...) → اكتب في vehicle_type\n"
-            "7. التصحيح الصوتي: إذا قال 'تعديل'/'قصدي'/'لا'/'معليش' بعد لوحة → احذف اللوحة السابقة واستبدلها بالجديدة.\n"
-            "8. الإخراج: مصفوفة JSON فقط بالشكل:\n"
-            '[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا كامري", '
-            '"street_name": "طريق الملك فهد", "street_location": "يمين الشارع", '
-            '"district_name": "العليا", "notes": "سليمة"}]\n'
-            "إذا لم تسمع أي لوحة في التسجيل، أرجع مصفوفة فارغة: []"
-        )
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
-                ]
-            }],
-            "generationConfig": {
-                "response_mime_type": "application/json",
-                "temperature": 0.0,
-                "max_output_tokens": 65536
-            }
-        }
-        res_json = _call_gemini_with_rotation(cfg, payload, model_name, kind=kind)
-        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
-        clean_text = raw_text.strip()
-        if clean_text.startswith("```json"):
-            clean_text = clean_text[7:]
-        elif clean_text.startswith("```"):
-            clean_text = clean_text[3:]
-        if clean_text.endswith("```"):
-            clean_text = clean_text[:-3]
-        clean_text = clean_text.strip()
-        plates = json.loads(clean_text)
-        if isinstance(plates, dict):
-            plates = [plates]
-        if isinstance(plates, list):
-            plates = _dedup_plates(plates)
-            print(f"[Gemini Audio Parser OK] Extracted: {len(plates)} plates")
-            return plates
+    """High-accuracy transcription with automatic chunking for long audio and strict 17 Saudi letters enforcement"""
+    if not audio_data:
         return []
-    except Exception as gem_err:
-        print(f"[Gemini Transcribe Error] {gem_err} -> Falling back to Groq Whisper")
+        
+    # Check if audio needs chunking (e.g. WAV > 120s)
+    chunks = slice_wav_bytes(audio_data, chunk_duration_sec=120.0, overlap_sec=4.0)
+    all_plates = []
+    
+    prompt = (
+        "أنت نظام ذكاء اصطناعي فائق الدقة متخصص حصرياً في استخراج أرقام وبيانات لوحات السيارات السعودية من الصوت بدقة 100% وبدون أي اختراع أو تخمين.\n"
+        "المطلوب بدقة متناهية:\n"
+        "1. استمع للتسجيل الصوتي واكتب فقط وحصرياً اللوحات التي نطقها المتحدث كما هي بالضبط.\n"
+        "2. ⚠️ الحروف المسموحة حصرياً في لوحات السعودية 17 حرفاً فقط:\n"
+        "   (أ ، ب ، ح ، د ، ر ، س ، ص ، ط ، ع ، ق ، ك ، ل ، م ، ن ، هـ ، و ، ي)\n"
+        "   - يُمنع منعاً باتاً استخراج أي حرف غيرها مثل (ج ، ت ، ث ، خ ، ذ ، ز ، ش ، ض ، ظ ، غ ، ف ، ئ ، ة).\n"
+        "   - صيغة اللوحة: 3 حروف متباعدة + 1 إلى 4 أرقام (مثال: 'ك د م 958' أو 'د ب أ 9075').\n"
+        "3. ⚠️ كلمات ليست لوحات: الكلمات مثل (رقم ، عين ، سين ، حسب ، دون ، فاصل ، لوحة) هي كلمات وصفية ولا تُعتبر لوحة.\n"
+        "4. الأرقام: اكتب الأرقام بدقة كما نُطقت سواء كانت مفردة أو مركبة (مثال: 'تسعمائة وثمانية وخمسين' = 958، 'ألف ومائتين وأربعة وثلاثين' = 1234، 'صفر سبعة وثمانين' = 087).\n"
+        "5. نوع السيارة والملاحظات:\n"
+        "   - إذا ذكر المتحدث نوع السيارة (مثل: باص، هايلوكس، كامري، يارس، نقل...) اكتبه في vehicle_type.\n"
+        "   - ⚠️ إذا لم يذكر نوع السيارة، اتركه فارغاً \"\" (لا تكتب تويوتا من رأسك أبداً).\n"
+        "   - الملاحظات وموقع الشارع: اكتبها إذا ذُكرت وإلا اتركها فارغة.\n"
+        "6. تصحيح النطق: إذا قال 'تعديل' أو 'قصدي' أو 'لا' أو 'معليش' بعد لوحة، استبدل اللوحة السابقة باللوحة المصححة.\n"
+        "7. مصفوفة JSON فقط بالشكل التالي:\n"
+        '[{"plate": "ك د م 958", "found": true, "vehicle_type": "", "street_name": "", "district_name": "", "notes": "", "street_location": ""}]\n'
+        "إذا لم يذكر أي لوحة، أرجع: []"
+    )
+    
+    gemini_succeeded = False
+    for chunk in chunks:
+        try:
+            mime_type, _ = _detect_audio_info(chunk)
+            b64_audio = base64.b64encode(chunk).decode("utf-8")
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
+                    ]
+                }],
+                "generationConfig": {
+                    "response_mime_type": "application/json",
+                    "temperature": 0.0,
+                    "max_output_tokens": 65536
+                }
+            }
+            res_json = _call_gemini_with_rotation(cfg, payload, "gemini-flash-lite-latest", kind=kind)
+            raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
+            clean_text = raw_text.strip()
+            if clean_text.startswith("```json"): clean_text = clean_text[7:]
+            if clean_text.startswith("```"): clean_text = clean_text[3:]
+            if clean_text.endswith("```"): clean_text = clean_text[:-3]
+            chunk_plates = json.loads(clean_text.strip())
+            if isinstance(chunk_plates, dict): chunk_plates = [chunk_plates]
+            if isinstance(chunk_plates, list):
+                for p in chunk_plates:
+                    cl = clean_saudi_plate(p.get("plate", ""))
+                    if cl:
+                        p["plate"] = cl
+                        if p.get("vehicle_type") == "تويوتا" and "تويوتا" not in str(chunk):
+                            p["vehicle_type"] = ""
+                        all_plates.append(p)
+                gemini_succeeded = True
+        except Exception as gem_err:
+            print(f"[Gemini Transcribe Chunk Error] {gem_err}")
+            
+    if gemini_succeeded:
+        all_plates = _dedup_plates(all_plates)
+        print(f"[Gemini Audio Parser OK] Total Extracted: {len(all_plates)} plates across {len(chunks)} chunk(s)")
+        return all_plates
 
-    # 2. Fallback to Groq Whisper Turbo + Phonetic Parser
+    # Fallback to Groq Whisper if Gemini failed completely
     try:
         groq_plates = _call_groq_whisper(cfg, audio_data)
         if groq_plates:
-            groq_plates = _dedup_plates(groq_plates)
-            print(f"[Groq Fallback OK] Extracted: {len(groq_plates)} plates")
-            return groq_plates
+            cleaned_groq = []
+            for p in groq_plates:
+                cl = clean_saudi_plate(p.get("plate", ""))
+                if cl:
+                    p["plate"] = cl
+                    cleaned_groq.append(p)
+            return _dedup_plates(cleaned_groq)
     except Exception as ge:
-        print(f"[Dual-Engine Groq error] {ge}")
-
-    # 3. Fallback to Deepgram Nova-3 API
-    try:
-        dg_plates = _call_deepgram(cfg, audio_data)
-        if dg_plates:
-            dg_plates = _dedup_plates(dg_plates)
-            print(f"[Deepgram Fallback OK] Extracted: {len(dg_plates)} plates")
-            return dg_plates
-    except Exception as dge:
-        print(f"[Dual-Engine Deepgram error] {dge}")
-
-    # 4. Fallback to OpenAI Whisper-1 API
-    try:
-        oa_plates = _call_openai_whisper(cfg, audio_data)
-        if oa_plates:
-            oa_plates = _dedup_plates(oa_plates)
-            print(f"[OpenAI Fallback OK] Extracted: {len(oa_plates)} plates")
-            return oa_plates
-    except Exception as oae:
-        print(f"[Dual-Engine OpenAI error] {oae}")
-
+        print(f"[Groq Fallback Error] {ge}")
     return []
-
 
 
 @app.post("/api/process")
