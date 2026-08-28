@@ -1037,11 +1037,14 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
                 if transcribed and len(transcribed.strip()) > 2:
                     try:
                         text_prompt = (
-                            f"أنت خبير استخراج لوحات سيارات سعودية. استخرج جميع اللوحات المذكورة في هذا النص الصوتي بالضبط كما نُطقت:\n"
+                            f"أنت خبير استخراج لوحات سيارات سعودية. استخرج جميع اللوحات المذكورة في هذا النص بالضبط كما نُطقت:\n"
                             f"\"{transcribed}\"\n"
-                            f"كل لوحة تتكون من 3 حروف عربية مفصولة بمسافات و 1 إلى 4 أرقام.\n"
+                            f"⚠️ الحروف المسموحة حصرياً 17 حرفاً فقط: (أ ب ح د ر س ص ط ع ق ك ل م ن هـ و ي)\n"
+                            f"⚠️ يُمنع استخدام: (ج ت ث خ ذ ز ش ض ظ غ ف ئ ة)\n"
+                            f"⚠️ كلمات مثل (رقم، عين، سين، حسب، دون، فاصل، لوحة) ليست لوحات.\n"
+                            f"⚠️ إذا لم يُذكر نوع السيارة صراحةً، اترك vehicle_type فارغاً \"\".\n"
                             f"أرجع مصفوفة JSON فقط بالشكل:\n"
-                            f'[{"plate": "د ب أ 9075", "found": true, "vehicle_type": "تويوتا", "notes": ""}]'
+                            f'[{{"plate": "ك د م 958", "found": true, "vehicle_type": "", "notes": ""}}]'
                         )
                         payload = {
                             "contents": [{"parts": [{"text": text_prompt}]}],
@@ -1055,8 +1058,17 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
                         p_list = json.loads(raw_t.strip())
                         if isinstance(p_list, dict): p_list = [p_list]
                         if isinstance(p_list, list) and p_list:
-                            print(f"[Gemini Text Parser OK] Extracted: {p_list}")
-                            return p_list
+                            cleaned_list = []
+                            for p in p_list:
+                                cl = clean_saudi_plate(p.get("plate", ""))
+                                if cl:
+                                    p["plate"] = cl
+                                    if p.get("vehicle_type") == "تويوتا" and "تويوتا" not in transcribed:
+                                        p["vehicle_type"] = ""
+                                    cleaned_list.append(p)
+                            if cleaned_list:
+                                print(f"[Gemini Text Parser OK] Extracted: {cleaned_list}")
+                                return cleaned_list
                     except Exception as te:
                         print(f"[Gemini Text Parser Error] {te}")
             else:
@@ -2449,13 +2461,21 @@ async def websocket_check_live(websocket: WebSocket, ticket: str = ""):
                                 # Get all plates from the response (not just first)
                                 all_result_plates = plates if (plates and isinstance(plates, list)) else []
                                 if plate_text and not any(p.get("plate") == plate_text for p in all_result_plates):
-                                    # Decoded plate differs from raw — use decoded
-                                    all_result_plates = [{"plate": plate_text, "vehicle_type": "تويوتا", "notes": ""}]
+                                    # Decoded plate differs from raw — use decoded, but clean it first
+                                    cleaned_pt = clean_saudi_plate(plate_text)
+                                    if cleaned_pt:
+                                        all_result_plates = [{"plate": cleaned_pt, "vehicle_type": "", "notes": ""}]
 
                                 for p_info in all_result_plates:
                                     pt = str(p_info.get("plate", "")).strip()
-                                    if not pt:
+                                    # Validate plate through Saudi cleaner
+                                    cleaned_pt = clean_saudi_plate(pt)
+                                    if not cleaned_pt:
                                         continue
+                                    pt = cleaned_pt
+                                    # Remove hallucinated تويوتا
+                                    if p_info.get("vehicle_type") == "تويوتا":
+                                        p_info["vehicle_type"] = ""
                                     # Real lookup against loaded Excel reference
                                     is_found = _lookup_plate(pt)
                                     await websocket.send_json({
