@@ -3176,7 +3176,8 @@ function getUserRestModel(){
   const saved=(localStorage.getItem(USER_REST_MODEL_KEY)||'').trim();
   if(saved&&_geminiModelsCacheRest.some(m=>m&&m.model_id===saved)) return saved;
   const f=_geminiModelsCacheRest[0];
-  return f&&f.model_id?String(f.model_id).trim():'';
+  if(f&&f.model_id) return String(f.model_id).trim();
+  return 'gemini-flash-lite-latest';
 }
 function getUserLiveModel(){
   const el=document.getElementById('userLiveModel');
@@ -3184,7 +3185,8 @@ function getUserLiveModel(){
   const saved=(localStorage.getItem(USER_LIVE_MODEL_KEY)||'').trim();
   if(saved&&_geminiModelsCacheLive.some(m=>m&&m.model_id===saved)) return saved;
   const f=_geminiModelsCacheLive[0];
-  return f&&f.model_id?String(f.model_id).trim():'';
+  if(f&&f.model_id) return String(f.model_id).trim();
+  return 'gemini-flash-lite-latest';
 }
 function onUserGeminiModelChange(){
   try{
@@ -5043,6 +5045,8 @@ function checkLiveMaybeAppendSessionRow(data){
   var rn=document.getElementById('checkSessionDefaultRecorder');
   const row={
     full_plate:plate,
+    vehicle_type:data.vehicle_type||'',
+    notes:data.notes||'',
     district_name:(dn&&dn.value||'').trim(),
     street_name:(sn&&sn.value||'').trim(),
     gps:'',
@@ -5520,7 +5524,7 @@ async function checkLiveToggleMic(){
         const fd=new FormData();
         fd.append('audio',wavBlob,'live_turn.wav');
         const cfg=await fetch('/api/config').then(function(r){return r.ok?r.json():{};}).catch(function(){return{};});
-        fd.append('model_name',cfg.gemini_model||'gemini-2.0-flash');
+        fd.append('model_name','gemini-flash-lite-latest');
         fd.append('recorder_name','تشيك مباشر');
         fd.append('district_default',(document.getElementById('checkSessionDefaultDistrict')||{}).value||'');
 
