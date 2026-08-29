@@ -5127,6 +5127,9 @@ async function exportCheckSessionExcel(){
     const fd=new FormData();
     fd.append('rows_json',JSON.stringify(mergedRows));
     fd.append('sheet_name',sheetName);
+    fd.append('district_default',(document.getElementById('checkSessionDefaultDistrict')&&document.getElementById('checkSessionDefaultDistrict').value||'').trim());
+    fd.append('street_default',(document.getElementById('checkSessionDefaultStreet')&&document.getElementById('checkSessionDefaultStreet').value||'').trim());
+    fd.append('recorder_default',(document.getElementById('checkSessionDefaultRecorder')&&document.getElementById('checkSessionDefaultRecorder').value||'').trim());
     const res=await fetch('/api/export-check-session',{method:'POST',body:fd});
     if(!res.ok){
       const err=await res.json().catch(function(){return{};});
