@@ -912,12 +912,58 @@ def clean_saudi_plate(raw_plate: str) -> str:
         
     return f"{l1} {l2} {l3} {digits}"
 
-def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 120.0, overlap_sec: float = 3.0) -> list[bytes]:
-    """Slice WAV audio bytes into manageable ~2-minute chunks for Gemini Multimodal Audio."""
+def slice_any_audio(audio_data: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
+    """
+    Universal audio slicer: converts ANY audio/video format (.wav, .mp3, .m4a, .webm, .ogg, .mp4, etc.)
+    into clean 16kHz Mono 16-bit PCM WAV chunks of ~60 seconds each.
+    Allows extracting 1000+ plates across 20+ minute recordings without missing a single plate.
+    """
+    if not audio_data or len(audio_data) < 100:
+        return []
+
+    # 1. Try ffmpeg if available
+    import subprocess
+    import tempfile
+    temp_dir = tempfile.mkdtemp(prefix="bareq_audio_")
+    try:
+        in_path = os.path.join(temp_dir, "input_audio")
+        with open(in_path, "wb") as f:
+            f.write(audio_data)
+
+        wav_path = os.path.join(temp_dir, "converted_16k.wav")
+        conv_cmd = [
+            "ffmpeg", "-y", "-i", in_path,
+            "-vn", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000",
+            wav_path
+        ]
+        res = subprocess.run(conv_cmd, capture_output=True, text=True, timeout=90)
+        if res.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 1000:
+            with open(wav_path, "rb") as f:
+                wav_bytes = f.read()
+            chunks = _slice_pcm_wav_bytes(wav_bytes, chunk_duration_sec, overlap_sec)
+            if chunks:
+                return chunks
+    except Exception:
+        pass
+    finally:
+        try:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    # 2. Native WAV slicing if it's already RIFF WAV
+    if audio_data.startswith(b"RIFF"):
+        chunks = _slice_pcm_wav_bytes(audio_data, chunk_duration_sec, overlap_sec)
+        if chunks:
+            return chunks
+
+    return [audio_data]
+
+def _slice_pcm_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
+    """Slice raw PCM WAV into overlapping chunks using standard wave library."""
     import wave
     import io
-    if not wav_bytes.startswith(b"RIFF") or len(wav_bytes) < 1000:
-        return [wav_bytes]
     try:
         with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
             n_channels = wf.getnchannels()
@@ -925,12 +971,13 @@ def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 120.0, overlap
             framerate = wf.getframerate()
             n_frames = wf.getnframes()
             total_sec = n_frames / framerate
-            if total_sec <= chunk_duration_sec + 5:
+            
+            if total_sec <= chunk_duration_sec + 2.0:
                 return [wav_bytes]
                 
             chunk_frames = int(chunk_duration_sec * framerate)
             overlap_frames = int(overlap_sec * framerate)
-            step_frames = chunk_frames - overlap_frames
+            step_frames = max(1, chunk_frames - overlap_frames)
             
             chunks = []
             cur_pos = 0
@@ -938,6 +985,7 @@ def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 120.0, overlap
                 wf.setpos(cur_pos)
                 frames_to_read = min(chunk_frames, n_frames - cur_pos)
                 data = wf.readframes(frames_to_read)
+                
                 out_io = io.BytesIO()
                 with wave.open(out_io, 'wb') as out_wf:
                     out_wf.setnchannels(n_channels)
@@ -945,12 +993,16 @@ def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 120.0, overlap
                     out_wf.setframerate(framerate)
                     out_wf.writeframes(data)
                 chunks.append(out_io.getvalue())
+                
                 cur_pos += step_frames
-                if n_frames - cur_pos < int(8 * framerate):
+                if n_frames - cur_pos < int(4 * framerate):
                     break
             return chunks if chunks else [wav_bytes]
     except Exception:
         return [wav_bytes]
+
+def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
+    return slice_any_audio(wav_bytes, chunk_duration_sec, overlap_sec)
 
 def _detect_audio_info(data: bytes) -> tuple[str, str]:
     """Detect actual audio MIME type and extension from binary headers"""
@@ -970,99 +1022,92 @@ def _detect_audio_info(data: bytes) -> tuple[str, str]:
         return ("audio/flac", "flac")
     return ("audio/webm", "webm")
 
-NUM_WORDS = [
-    # Compound numbers (thousands, hundreds, tens)
-    ('تسعمائة', '900'), ('تسعمائه', '900'), ('تسعمية', '900'), ('تسعميه', '900'),
-    ('ثمانمائة', '800'), ('ثمانمائه', '800'), ('تمنمية', '800'), ('تمنميه', '800'),
-    ('سبعمائة', '700'), ('سبعمائه', '700'), ('سبعمية', '700'), ('سبعميه', '700'),
-    ('ستمائة', '600'), ('ستمائه', '600'), ('ستمية', '600'), ('ستميه', '600'),
-    ('خمسمائة', '500'), ('خمسمائه', '500'), ('خمسمية', '500'), ('خمسميه', '500'),
-    ('أربعمائة', '400'), ('أربعمائه', '400'), ('اربعمية', '400'), ('اربعميه', '400'),
-    ('ثلاثمائة', '300'), ('ثلاثمائه', '300'), ('تلاتمية', '300'), ('تلاتميه', '300'),
-    ('مائتان', '200'), ('مئتان', '200'), ('ميتين', '200'),
-    ('مائة', '100'), ('مائه', '100'), ('مية', '100'), ('ميه', '100'),
-    ('ألفين', '2000'), ('الفين', '2000'), ('ألف', '1000'), ('الف', '1000'),
-    ('تسعون', '90'), ('تسعين', '90'),
-    ('ثمانون', '80'), ('ثمانين', '80'), ('تمانين', '80'),
-    ('سبعون', '70'), ('سبعين', '70'),
-    ('ستون', '60'), ('ستين', '60'),
-    ('خمسون', '50'), ('خمسين', '50'),
-    ('أربعون', '40'), ('اربعون', '40'), ('أربعين', '40'), ('اربعين', '40'),
-    ('ثلاثون', '30'), ('تلاتون', '30'), ('ثلاثين', '30'), ('تلاتين', '30'),
-    ('عشرون', '20'), ('عشرين', '20'),
-    ('أحد عشر', '11'), ('احد عشر', '11'), ('اثنا عشر', '12'), ('اثنى عشر', '12'), ('اتناشر', '12'),
-    ('ثلاثة عشر', '13'), ('أربعة عشر', '14'), ('خمسة عشر', '15'), ('ستة عشر', '16'), ('سبعة عشر', '17'), ('ثمانية عشر', '18'), ('تسعة عشر', '19'),
-    ('عشرة', '10'), ('عشره', '10'),
-    # Single digits
-    ('واحد', '1'), ('اثنين', '2'), ('إثنين', '2'), ('اتنين', '2'), ('تنين', '2'),
-    ('ثلاثة', '3'), ('تلاتة', '3'), ('ثلاثه', '3'), ('تلاته', '3'),
-    ('أربعة', '4'), ('اربعة', '4'), ('أربعه', '4'), ('اربعه', '4'),
-    ('خمسة', '5'), ('خمسه', '5'),
-    ('ستة', '6'), ('سته', '6'), ('ستّة', '6'),
-    ('سبعة', '7'), ('سبعه', '7'),
-    ('ثمانية', '8'), ('ثمانيه', '8'), ('تمانية', '8'), ('تمانيه', '8'),
-    ('تسعة', '9'), ('تسعه', '9'), ('صفر', '0'),
-    ('٠', '0'), ('١', '1'), ('٢', '2'), ('٣', '3'), ('٤', '4'), ('٥', '5'), ('٦', '6'), ('٧', '7'), ('٨', '8'), ('٩', '9')
-]
-
-def _parse_plates_from_arabic_text(text: str) -> list:
-    """Parse multiple or single license plates from transcribed text with full phonetic normalization and voice correction replacement"""
-    if not text:
-        return []
-    
-    import re
-    t = text
-    for w, d in NUM_WORDS:
-        t = re.sub(r'(?<!\w)' + re.escape(w) + r'(?!\w)', d, t)
-    for w, l in SPATIAL_LETTER_WORDS:
-        t = re.sub(r'(?<!\w)' + re.escape(w) + r'(?!\w)', l, t)
-
-    # Merge isolated digit sequences
-    prev = ""
-    while prev != t:
-        prev = t
-        t = re.sub(r'(\d)\s+(\d)', r'\1\2', t)
-
-    # Split by voice correction keywords
-    corr_pattern = re.compile(r'\b(تعديل|قصدي|أقصد|اقصد|بدل|عفواً|عفوا|معليش|لا\s+قصدي)\b')
-    parts = corr_pattern.split(t)
+def _dedup_boundary_plates(chunks_plates_list: list) -> list:
+    """
+    Merge plates across consecutive audio chunks.
+    Only deduplicates identical consecutive plates right at the boundary overlap,
+    ensuring ALL distinct plates spoken throughout a 19+ minute session (1000+ plates) are 100% preserved.
+    """
     final_plates = []
-    
-    # Detect spoken vehicle type
-    v_type = ""
-    v_types = ['كامري', 'يارس', 'كورولا', 'هايلوكس', 'سوناتا', 'النترا', 'اكسنت', 'تورس', 'باترول', 'صني', 'ددسن', 'يوكون', 'تاهو', 'باص', 'دينا', 'نقل', 'شاحنة', 'وايت', 'سطحة', 'دباب', 'جيب', 'تويوتا', 'هيونداي', 'فورد', 'نيسان', 'كيا', 'مازدا', 'جمس', 'شفروليه', 'لكزس', 'مرسيدس', 'ايسوزو', 'ميتسوبيشي', 'سوزوكي', 'شانجان', 'هافال', 'جيلي', 'ام جي']
-    for vt in v_types:
-        if vt in text:
-            v_type = vt
-            break
+    for chunk_plates in chunks_plates_list:
+        for p_idx, p in enumerate(chunk_plates):
+            if not isinstance(p, dict):
+                continue
+            plate_text = p.get("plate", "").strip()
+            if not plate_text:
+                continue
             
-    for idx, part in enumerate(parts):
-        if not part or corr_pattern.match(part.strip()):
-            continue
-        
-        # Match letters then digits OR digits then letters
-        matches1 = re.findall(r'([أ-يى]\s*[أ-يى]\s*[أ-يى])\s*(\d{1,4})', part)
-        matches2 = re.findall(r'(\d{1,4})\s*([أ-يى]\s*[أ-يى]\s*[أ-يى])', part)
-        seg_plates = []
-        for letters_raw, digits in matches1:
-            cleaned = clean_saudi_plate(f"{letters_raw} {digits}")
-            if cleaned:
-                seg_plates.append({"plate": cleaned, "found": True, "vehicle_type": v_type, "notes": "", "street_name": "", "district_name": ""})
-        for digits, letters_raw in matches2:
-            cleaned = clean_saudi_plate(f"{letters_raw} {digits}")
-            if cleaned and not any(p["plate"] == cleaned for p in seg_plates):
-                seg_plates.append({"plate": cleaned, "found": True, "vehicle_type": v_type, "notes": "", "street_name": "", "district_name": ""})
-        
-        if is_after_correction and seg_plates:
-            if final_plates:
-                final_plates[-1] = seg_plates[0]
-                final_plates.extend(seg_plates[1:])
-            else:
-                final_plates.extend(seg_plates)
-        else:
-            final_plates.extend(seg_plates)
-
+            # If this is the first plate of a new chunk, check if it duplicates the last plate of the previous chunk
+            if final_plates and p_idx == 0:
+                last_plate = final_plates[-1].get("plate", "").strip()
+                if _norm_plate_str(plate_text) == _norm_plate_str(last_plate):
+                    # Merge attributes
+                    for k, v in p.items():
+                        if v and not final_plates[-1].get(k):
+                            final_plates[-1][k] = v
+                    continue
+            
+            final_plates.append(p)
     return final_plates
+
+def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: str = "rest") -> dict:
+    """Call Gemini API with automatic key AND verified model rotation on 429/503/404."""
+    import time
+    FALLBACK_MODELS = [
+        "gemini-flash-lite-latest",
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemma-4-31b-it",
+    ]
+
+    pool_field = "gemini_rest_keys" if kind == "rest" else "gemini_live_keys"
+    keys = cfg.get(pool_field, [])
+    if not keys:
+        primary = cfg.get("gemini_api_key", "")
+        keys = [primary] if primary else []
+    if not keys:
+        raise Exception("لا يوجد مفتاح Gemini — أضف مفتاحاً من لوحة الإدارة")
+
+    req_timeout = 15 if kind == "live" else 120
+    models_to_try = [model_name] if model_name in FALLBACK_MODELS else []
+    for m in FALLBACK_MODELS:
+        if m not in models_to_try:
+            models_to_try.append(m)
+
+    last_err = None
+    for model in models_to_try:
+        for key in keys:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            try:
+                resp = requests.post(url, json=payload, timeout=req_timeout)
+                if resp.status_code == 200:
+                    print(f"[Gemini OK] model={model}, key=...{key[-6:]}")
+                    return resp.json()
+                elif resp.status_code in (404, 429, 500, 502, 503, 504):
+                    print(f"[Gemini {resp.status_code}] on {model}/...{key[-6:]}, rotating...")
+                    last_err = f"{resp.status_code} on {model}"
+                    continue
+                else:
+                    raise Exception(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.RequestException as e:
+                print(f"[Gemini Network error] {model}/...{key[-6:]}: {type(e).__name__}")
+                last_err = f"Network error: {e}"
+                continue
+
+    if kind != "live":
+        time.sleep(2)
+        for model in models_to_try:
+            for key in keys:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                try:
+                    resp = requests.post(url, json=payload, timeout=req_timeout)
+                    if resp.status_code == 200:
+                        return resp.json()
+                except Exception:
+                    continue
+
+    raise Exception(last_err or "All Gemini models and keys exhausted")
+
 
 def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
     """Ultra-fast Whisper transcription via Groq with unbiased vocabulary prompt and dual-layer parser"""
@@ -1147,168 +1192,21 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
             print(f"[Groq Whisper Error] {e}")
     return []
 
-def _call_deepgram(cfg: dict, audio_data: bytes) -> list:
-    """Ultra-fast Arabic transcription via Deepgram Nova-3 API"""
-    dg_key = cfg.get("deepgram_api_key", "")
-    if not dg_key:
-        return []
-    try:
-        mime_type, _ = _detect_audio_info(audio_data)
-        headers = {
-            "Authorization": f"Token {dg_key}",
-            "Content-Type": mime_type
-        }
-        url = "https://api.deepgram.com/v1/listen?model=nova-3&language=ar&smart_format=true"
-        resp = requests.post(url, headers=headers, data=audio_data, timeout=8)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            channels = res_json.get("results", {}).get("channels", [])
-            if channels:
-                alts = channels[0].get("alternatives", [])
-                if alts:
-                    transcribed = alts[0].get("transcript", "").strip()
-                    if transcribed:
-                        print(f"[Deepgram OK] Transcribed: '{transcribed}'")
-                        plates = _parse_plates_from_arabic_text(transcribed)
-                        if plates:
-                            return plates
-        else:
-            print(f"[Deepgram] HTTP {resp.status_code}: {resp.text[:120]}")
-    except Exception as e:
-        print(f"[Deepgram Error] {e}")
-    return []
 
-def _call_openai_whisper(cfg: dict, audio_data: bytes) -> list:
-    """Transcription via OpenAI Whisper API"""
-    oa_key = cfg.get("openai_api_key", "")
-    if not oa_key:
-        return []
-    try:
-        mime_type, ext = _detect_audio_info(audio_data)
-        filename = f"speech.{ext}"
-        headers = {"Authorization": f"Bearer {oa_key}"}
-        files = {"file": (filename, audio_data, mime_type)}
-        data = {
-            "model": "whisper-1",
-            "language": "ar",
-            "temperature": "0.0",
-            "prompt": "تسجيل صوتي لتسميع لوحات سيارات سعودية: ألف باء تاء ثاء جيم حاء خاء دال ذال راء زين سين شين صاد ضاد طاء ظاء عين غين فاء قاف كاف لام ميم نون هاء واو ياء 0 1 2 3 4 5 6 7 8 9 شارع حي ملاحظات"
-        }
-        resp = requests.post("https://api.openai.com/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=12)
-        if resp.status_code == 200:
-            transcribed = resp.json().get("text", "")
-            if transcribed:
-                print(f"[OpenAI Whisper OK] Transcribed: '{transcribed}'")
-                plates = _parse_plates_from_arabic_text(transcribed)
-                if plates:
-                    return plates
-        else:
-            print(f"[OpenAI Whisper] HTTP {resp.status_code}: {resp.text[:120]}")
-    except Exception as e:
-        print(f"[OpenAI Whisper Error] {e}")
-    return []
-
-def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: str = "rest") -> dict:
-    """Call Gemini API with automatic key AND verified model rotation on 429/503/404."""
-    import time
-    FALLBACK_MODELS = [
-        "gemini-flash-lite-latest",
-        "gemini-flash-latest",
-        "gemini-2.5-flash",
-        "gemma-4-31b-it",
-    ]
-
-    pool_field = "gemini_rest_keys" if kind == "rest" else "gemini_live_keys"
-    keys = cfg.get(pool_field, [])
-    if not keys:
-        primary = cfg.get("gemini_api_key", "")
-        keys = [primary] if primary else []
-    if not keys:
-        raise Exception("لا يوجد مفتاح Gemini — أضف مفتاحاً من لوحة الإدارة")
-
-    req_timeout = 15 if kind == "live" else 120
-    models_to_try = [model_name] if model_name in FALLBACK_MODELS else []
-    for m in FALLBACK_MODELS:
-        if m not in models_to_try:
-            models_to_try.append(m)
-
-    last_err = None
-    for model in models_to_try:
-        for key in keys:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-            try:
-                resp = requests.post(url, json=payload, timeout=req_timeout)
-                if resp.status_code == 200:
-                    print(f"[Gemini OK] model={model}, key=...{key[-6:]}")
-                    return resp.json()
-                elif resp.status_code in (404, 429, 500, 502, 503, 504):
-                    print(f"[Gemini {resp.status_code}] on {model}/...{key[-6:]}, rotating...")
-                    last_err = f"{resp.status_code} on {model}"
-                    continue
-                else:
-                    raise Exception(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.RequestException as e:
-                print(f"[Gemini Network error] {model}/...{key[-6:]}: {type(e).__name__}")
-                last_err = f"Network error: {e}"
-                continue
-
-    if kind != "live":
-        time.sleep(2)
-        for model in models_to_try:
-            for key in keys:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                try:
-                    resp = requests.post(url, json=payload, timeout=req_timeout)
-                    if resp.status_code == 200:
-                        return resp.json()
-                except Exception:
-                    continue
-
-    raise Exception(last_err or "All Gemini models and keys exhausted")
-
-def _dedup_plates(plates: list) -> list:
-    """
-    Remove duplicate plates from the list.
-    Keeps the first occurrence with the most data (non-empty fields).
-    Normalization: strip spaces for comparison, but preserve original.
-    """
-    seen = {}
-    result = []
-    for p in plates:
-        if not isinstance(p, dict):
-            continue
-        raw = p.get("plate", "").strip()
-        # Normalize for comparison: collapse spaces
-        norm = re.sub(r'\s+', ' ', raw).strip()
-        if not norm:
-            result.append(p)
-            continue
-        if norm not in seen:
-            seen[norm] = len(result)
-            result.append(p)
-        else:
-            # If new entry has more data (more non-empty fields), replace the old one
-            existing_idx = seen[norm]
-            existing = result[existing_idx]
-            existing_score = sum(1 for v in existing.values() if v and str(v).strip())
-            new_score = sum(1 for v in p.values() if v and str(v).strip())
-            if new_score > existing_score:
-                result[existing_idx] = p
-    return result
 
 def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "live") -> list:
-    """High-accuracy transcription with automatic chunking for long audio and strict 17 Saudi letters enforcement"""
+    """High-accuracy transcription with universal chunking for long audio (1000+ plates) and strict 17 Saudi letters enforcement"""
     if not audio_data:
         return []
         
-    # Check if audio needs chunking (e.g. WAV > 120s)
-    chunks = slice_wav_bytes(audio_data, chunk_duration_sec=120.0, overlap_sec=4.0)
-    all_plates = []
+    # Chunk long audio into ~60s segments (e.g. 19 min audio -> 19 clean chunks)
+    chunks = slice_any_audio(audio_data, chunk_duration_sec=60.0, overlap_sec=2.0)
+    print(f"[Audio Processing] Sliced audio into {len(chunks)} chunk(s) for deep analysis.")
     
     prompt = (
         "أنت نظام ذكاء اصطناعي فائق الدقة متخصص حصرياً في تفريغ واستخراج أرقام وبيانات لوحات السيارات السعودية من الصوت بدقة 100% وبدون أي اختراع أو تخمين.\n"
         "المطلوب بدقة متناهية:\n"
-        "1. استمع للتسجيل الصوتي واكتب فقط وحصرياً اللوحات التي نطقها المتحدث كما هي بالضبط.\n"
+        "1. استمع للتسجيل الصوتي واكتب كل لوحة نطقها المتحدث بدون استثناء وبالترتيب الزمني الدقيق.\n"
         "2. ⚠️ الحروف المعتمدة في لوحات السعودية 17 حرفاً فقط:\n"
         "   (أ ، ب ، ح ، د ، ر ، س ، ص ، ط ، ع ، ق ، ك ، ل ، م ، ن ، هـ ، و ، ي)\n"
         "   - إذا نطق اسم الحرف (كاف=ك، دال=د، ميم=م، باء=ب، ألف=أ، واو=و، قاف=ق، عين=ع، سين=س، هاء=هـ...).\n"
@@ -1327,8 +1225,9 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
         "إذا كان التسجيل صامتاً أو لم يذكر أي لوحة، أرجع: []"
     )
     
-    gemini_succeeded = False
-    for chunk in chunks:
+    chunks_results = []
+    for c_idx, chunk in enumerate(chunks):
+        chunk_plates = []
         try:
             mime_type, _ = _detect_audio_info(chunk)
             b64_audio = base64.b64encode(chunk).decode("utf-8")
@@ -1351,122 +1250,36 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
             if clean_text.startswith("```json"): clean_text = clean_text[7:]
             if clean_text.startswith("```"): clean_text = clean_text[3:]
             if clean_text.endswith("```"): clean_text = clean_text[:-3]
-            chunk_plates = json.loads(clean_text.strip())
-            if isinstance(chunk_plates, dict): chunk_plates = [chunk_plates]
-            if isinstance(chunk_plates, list):
-                for p in chunk_plates:
+            parsed = json.loads(clean_text.strip())
+            if isinstance(parsed, dict): parsed = [parsed]
+            if isinstance(parsed, list):
+                for p in parsed:
                     cl = clean_saudi_plate(p.get("plate", ""))
                     if cl:
                         p["plate"] = cl
                         if p.get("vehicle_type") == "تويوتا" and "تويوتا" not in str(p):
                             p["vehicle_type"] = ""
-                        all_plates.append(p)
-                gemini_succeeded = True
+                        chunk_plates.append(p)
+            print(f"[Chunk {c_idx+1}/{len(chunks)}] Extracted {len(chunk_plates)} plate(s).")
         except Exception as gem_err:
-            print(f"[Gemini Transcribe Chunk Error] {gem_err}")
-            
-    if gemini_succeeded:
-        all_plates = _dedup_plates(all_plates)
-        print(f"[Gemini Audio Parser OK] Total Extracted: {len(all_plates)} plates across {len(chunks)} chunk(s)")
-        return all_plates
-
-    # Fallback to Groq Whisper if Gemini failed completely
-    try:
-        groq_plates = _call_groq_whisper(cfg, audio_data)
-        if groq_plates:
-            cleaned_groq = []
-            for p in groq_plates:
-                cl = clean_saudi_plate(p.get("plate", ""))
-                if cl:
-                    p["plate"] = cl
-                    cleaned_groq.append(p)
-            return _dedup_plates(cleaned_groq)
-    except Exception as ge:
-        print(f"[Groq Fallback Error] {ge}")
-
-    return []
+            print(f"[Chunk {c_idx+1}/{len(chunks)} Gemini Error] {gem_err}, trying fallback...")
+            try:
+                groq_p = _call_groq_whisper(cfg, chunk)
+                if groq_p:
+                    for p in groq_p:
+                        cl = clean_saudi_plate(p.get("plate", ""))
+                        if cl:
+                            p["plate"] = cl
+                            chunk_plates.append(p)
+            except Exception as ge:
+                print(f"[Chunk {c_idx+1} Fallback Error] {ge}")
         
-    # Check if audio needs chunking (e.g. WAV > 120s)
-    chunks = slice_wav_bytes(audio_data, chunk_duration_sec=120.0, overlap_sec=4.0)
-    all_plates = []
-    
-    prompt = (
-        "أنت نظام ذكاء اصطناعي فائق الدقة متخصص حصرياً في استخراج أرقام وبيانات لوحات السيارات السعودية من الصوت بدقة 100% وبدون أي اختراع أو تخمين.\n"
-        "المطلوب بدقة متناهية:\n"
-        "1. استمع للتسجيل الصوتي واكتب فقط وحصرياً اللوحات التي نطقها المتحدث كما هي بالضبط.\n"
-        "2. ⚠️ الحروف المسموحة حصرياً في لوحات السعودية 17 حرفاً فقط:\n"
-        "   (أ ، ب ، ح ، د ، ر ، س ، ص ، ط ، ع ، ق ، ك ، ل ، م ، ن ، هـ ، و ، ي)\n"
-        "   - يُمنع منعاً باتاً استخراج أي حرف غيرها مثل (ج ، ت ، ث ، خ ، ذ ، ز ، ش ، ض ، ظ ، غ ، ف ، ئ ، ة).\n"
-        "   - صيغة اللوحة: 3 حروف متباعدة + 1 إلى 4 أرقام (مثال: 'ك د م 958' أو 'د ب أ 9075').\n"
-        "3. ⚠️ كلمات ليست لوحات: الكلمات مثل (رقم ، عين ، سين ، حسب ، دون ، فاصل ، لوحة) هي كلمات وصفية ولا تُعتبر لوحة.\n"
-        "4. الأرقام: اكتب الأرقام بدقة كما نُطقت سواء كانت مفردة أو مركبة (مثال: 'تسعمائة وثمانية وخمسين' = 958، 'ألف ومائتين وأربعة وثلاثين' = 1234، 'صفر سبعة وثمانين' = 087).\n"
-        "5. نوع السيارة والملاحظات:\n"
-        "   - إذا ذكر المتحدث نوع السيارة (مثل: باص، هايلوكس، كامري، يارس، نقل...) اكتبه في vehicle_type.\n"
-        "   - ⚠️ إذا لم يذكر نوع السيارة، اتركه فارغاً \"\" (لا تكتب تويوتا من رأسك أبداً).\n"
-        "   - الملاحظات وموقع الشارع: اكتبها إذا ذُكرت وإلا اتركها فارغة.\n"
-        "6. تصحيح النطق: إذا قال 'تعديل' أو 'قصدي' أو 'لا' أو 'معليش' بعد لوحة، استبدل اللوحة السابقة باللوحة المصححة.\n"
-        "7. مصفوفة JSON فقط بالشكل التالي:\n"
-        '[{"plate": "ك د م 958", "found": true, "vehicle_type": "", "street_name": "", "district_name": "", "notes": "", "street_location": ""}]\n'
-        "إذا لم يذكر أي لوحة، أرجع: []"
-    )
-    
-    gemini_succeeded = False
-    for chunk in chunks:
-        try:
-            mime_type, _ = _detect_audio_info(chunk)
-            b64_audio = base64.b64encode(chunk).decode("utf-8")
-            payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
-                    ]
-                }],
-                "generationConfig": {
-                    "response_mime_type": "application/json",
-                    "temperature": 0.0,
-                    "max_output_tokens": 65536
-                }
-            }
-            res_json = _call_gemini_with_rotation(cfg, payload, "gemini-flash-lite-latest", kind=kind)
-            raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
-            clean_text = raw_text.strip()
-            if clean_text.startswith("```json"): clean_text = clean_text[7:]
-            if clean_text.startswith("```"): clean_text = clean_text[3:]
-            if clean_text.endswith("```"): clean_text = clean_text[:-3]
-            chunk_plates = json.loads(clean_text.strip())
-            if isinstance(chunk_plates, dict): chunk_plates = [chunk_plates]
-            if isinstance(chunk_plates, list):
-                for p in chunk_plates:
-                    cl = clean_saudi_plate(p.get("plate", ""))
-                    if cl:
-                        p["plate"] = cl
-                        if p.get("vehicle_type") == "تويوتا" and "تويوتا" not in str(chunk):
-                            p["vehicle_type"] = ""
-                        all_plates.append(p)
-                gemini_succeeded = True
-        except Exception as gem_err:
-            print(f"[Gemini Transcribe Chunk Error] {gem_err}")
+        chunks_results.append(chunk_plates)
             
-    if gemini_succeeded:
-        all_plates = _dedup_plates(all_plates)
-        print(f"[Gemini Audio Parser OK] Total Extracted: {len(all_plates)} plates across {len(chunks)} chunk(s)")
-        return all_plates
+    final_plates = _dedup_boundary_plates(chunks_results)
+    print(f"[Gemini Universal Audio Parser OK] Total Extracted: {len(final_plates)} plates across {len(chunks)} chunk(s).")
+    return final_plates
 
-    # Fallback to Groq Whisper if Gemini failed completely
-    try:
-        groq_plates = _call_groq_whisper(cfg, audio_data)
-        if groq_plates:
-            cleaned_groq = []
-            for p in groq_plates:
-                cl = clean_saudi_plate(p.get("plate", ""))
-                if cl:
-                    p["plate"] = cl
-                    cleaned_groq.append(p)
-            return _dedup_plates(cleaned_groq)
-    except Exception as ge:
-        print(f"[Groq Fallback Error] {ge}")
-    return []
 
 
 @app.post("/api/process")

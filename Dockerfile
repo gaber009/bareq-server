@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+    curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
