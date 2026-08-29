@@ -543,7 +543,7 @@ async function omRunMatch() {
                     <tr>
                         <td>${i+1}</td>
                         <td style="font-weight:800;color:var(--text)">${s.plate}</td>
-                        <td><a href="https://www.google.com/maps?q=${encodeURIComponent(s.gps)}" target="_blank" style="color:var(--teal);font-weight:700;text-decoration:none">📍 خريطة</a></td>
+                        <td><a href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(String(s.gps||"").replace("📍","").trim())}" target="_blank" style="color:var(--teal);font-weight:700;text-decoration:underline">📍 توجيه خرائط جوجل</a></td>
                         <td>${s.vehicle_type}</td>
                         <td>${s.notes}</td>
                         <td><strong style="color:var(--green)">${s.dist < 99990 ? s.dist.toFixed(2) : '—'}</strong></td>
@@ -1780,10 +1780,11 @@ async def parse_gps_excel(request: Request):
 def _norm_plate_str(s: str) -> str:
     if not s:
         return ""
-    s = str(s).strip().lower()
-    s = re.sub(r'[\s\u200b\u200c\u200d\ufeff\-_]+', '', s)
-    s = re.sub(r'[أإآٱ]', 'ا', s)
-    s = s.replace('ى', 'ي').replace('ة', 'ه')
+    indic_to_eng = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    s = str(s).translate(indic_to_eng).strip().lower()
+    s = re.sub(r'[\s\u200b\u200c\u200d\ufeff\-_\.,:;/\\]+', '', s)
+    s = re.sub(r'[أإآٱ]', 'أ', s)
+    s = s.replace('ا', 'أ').replace('ى', 'ي').replace('ة', 'هـ').replace('ه', 'هـ')
     return s
 
 @app.post("/api/fast-match")
@@ -2880,10 +2881,14 @@ async def auth_me(req: Request):
 @app.get("/api/whatsapp")
 async def get_whatsapp_number():
     cfg = load_config()
+    num = str(cfg.get("whatsapp_number", "201094593394")).strip().replace("+", "").replace(" ", "").replace("-", "")
+    if num.startswith("01"):
+        num = "2" + num
     return {
         "status": "ok",
-        "whatsapp_number": cfg.get("whatsapp_number", "+966500000000"),
-        "support_message": "مرحباً الدعم الفني لتطبيق بارق، أحتاج مساعدة."
+        "whatsapp_number": num,
+        "contact_name": "أحمد عرفات",
+        "support_message": "مرحباً أ/ أحمد عرفات، أحتاج مساعدة أو استفسار بخصوص تطبيق بارق."
     }
 
 @app.post("/admin/whatsapp")
@@ -2937,11 +2942,20 @@ async def request_plan(req: Request):
     plan_name = data.get("plan_name", "باقة")
     user_name = data.get("user_name", "مندوب")
     phone = data.get("phone", "")
-    msg = f"مرحباً، أنا المندوب {user_name} ({phone}) وأرغب في الاشتراك في {plan_name}"
+    cfg = load_config()
+    raw_num = str(cfg.get("whatsapp_number", "201094593394")).strip().replace("+", "").replace(" ", "").replace("-", "")
+    if raw_num.startswith("01"):
+        wa_target = "2" + raw_num
+    else:
+        wa_target = raw_num
+    import urllib.parse
+    phone_info = f" ({phone})" if phone else ""
+    msg = f"مرحباً أ/ أحمد عرفات، أنا المندوب {user_name}{phone_info} وأرغب في الاشتراك وتفعيل {plan_name} في تطبيق بارق."
+    encoded_msg = urllib.parse.quote(msg)
     return {
         "status": "ok",
-        "message": f"تم استلام طلب اشتراكك في '{plan_name}' بنجاح! سيتم مراجعة الطلب وتفعيله.",
-        "whatsapp_url": f"https://api.whatsapp.com/send?text={msg}"
+        "message": f"تم تسجيل طلب اشتراكك في '{plan_name}' بنجاح! جاري تحويلك للأستاذ أحمد عرفات عبر واتساب لتفعيل الباقة فوراً.",
+        "whatsapp_url": f"https://api.whatsapp.com/send?phone={wa_target}&text={encoded_msg}"
     }
 
 @app.post("/auth/logout")

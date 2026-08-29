@@ -5706,11 +5706,15 @@ function buildWavFromPcm16(pcm16,sampleRate){
 }
 
 function normPlate(s){
-  s=String(s||'').trim();
-  s=s.replace(/[\s\u200b\u200c\u200d\ufeff]+/g,'');
-  s=s.replace(/[\u0623\u0625\u0622\u0671]/g,'\u0627');
-  s=s.replace(/[\u0649]/g,'\u064a');
-  s=s.replace(/[\u0629]/g,'\u0647');
+  s = String(s||'').trim();
+  const indic = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+  for(let i=0; i<10; i++){ s = s.split(indic[i]).join(String(i)); }
+  s = s.replace(/[\s\u200b\u200c\u200d\ufeff\-_\.,:;/\\]+/g,'');
+  s = s.replace(/[\u0623\u0625\u0622\u0671]/g,'أ');
+  s = s.replace(/ا/g,'أ');
+  s = s.replace(/[\u0649]/g,'ي');
+  s = s.replace(/[\u0629]/g,'هـ');
+  s = s.replace(/ه/g,'هـ');
   return s.toLowerCase();
 }
 
@@ -8208,16 +8212,27 @@ function clearCurrentHistoryTab(){
   renderCurrentHistoryTab();
 }
 
-// Initialize WhatsApp Number & Sync
+// Initialize WhatsApp Number & Sync (Ahmed Arafat: 01094593394 / 201094593394)
 async function initWhatsAppSupport(){
   try{
     const res = await fetch('/api/whatsapp');
     const data = await res.json();
     if(data && data.whatsapp_number){
-      const cleanNum = data.whatsapp_number.replace(/[^0-9]/g, '');
-      const msg = encodeURIComponent(data.support_message || 'مرحباً الدعم الفني لتطبيق بارق');
+      let cleanNum = data.whatsapp_number.replace(/[^0-9]/g, '');
+      if(cleanNum.startsWith('01')) cleanNum = '2' + cleanNum;
+      const msg = encodeURIComponent(data.support_message || 'مرحباً أ/ أحمد عرفات، أحتاج مساعدة أو تفعيل باقة في تطبيق بارق.');
+      
+      // Update floating button
       const el = document.getElementById('waFloatBtn');
       if(el) el.href = 'https://api.whatsapp.com/send?phone=' + cleanNum + '&text=' + msg;
+      
+      // Update plans modal whatsapp button
+      const planWaBtn = document.getElementById('publicPlansWhatsappBtn');
+      if(planWaBtn){
+        const planMsg = encodeURIComponent('مرحباً أ/ أحمد عرفات، أرغب في تفعيل باقة في تطبيق بارق.');
+        planWaBtn.href = 'https://api.whatsapp.com/send?phone=' + cleanNum + '&text=' + planMsg;
+        planWaBtn.innerHTML = '📱 تواصل مع أ/ أحمد عرفات (01094593394)';
+      }
     }
   }catch(_){}
 }
