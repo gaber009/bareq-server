@@ -1194,115 +1194,104 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
 
 
 
+def _process_single_chunk(chunk_data: tuple) -> list:
+    """Worker to process a single audio chunk with Gemini rotation and Groq fallback"""
+    c_idx, total_chunks, chunk, cfg, prompt, kind = chunk_data
+    chunk_plates = []
+    try:
+        mime_type, _ = _detect_audio_info(chunk)
+        b64_audio = base64.b64encode(chunk).decode("utf-8")
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
+                ]
+            }],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "temperature": 0.0,
+                "max_output_tokens": 8192
+            }
+        }
+        res_json = _call_gemini_with_rotation(cfg, payload, "gemini-flash-lite-latest", kind=kind)
+        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
+        clean_text = raw_text.strip()
+        if clean_text.startswith("```json"): clean_text = clean_text[7:]
+        if clean_text.startswith("```"): clean_text = clean_text[3:]
+        if clean_text.endswith("```"): clean_text = clean_text[:-3]
+        parsed = json.loads(clean_text.strip())
+        if isinstance(parsed, dict): parsed = [parsed]
+        if isinstance(parsed, list):
+            for p in parsed:
+                cl = clean_saudi_plate(p.get("plate", ""))
+                if cl:
+                    p["plate"] = cl
+                    if p.get("vehicle_type") == "تويوتا" and "تويوتا" not in str(p):
+                        p["vehicle_type"] = ""
+                    chunk_plates.append(p)
+        print(f"[Chunk {c_idx+1}/{total_chunks}] Extracted {len(chunk_plates)} plate(s).")
+    except Exception as gem_err:
+        print(f"[Chunk {c_idx+1}/{total_chunks} Gemini Error] {gem_err}, trying fallback...")
+        try:
+            groq_p = _call_groq_whisper(cfg, chunk)
+            if groq_p:
+                for p in groq_p:
+                    cl = clean_saudi_plate(p.get("plate", ""))
+                    if cl:
+                        p["plate"] = cl
+                        chunk_plates.append(p)
+        except Exception as ge:
+            print(f"[Chunk {c_idx+1} Fallback Error] {ge}")
+    return chunk_plates
+
 def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "live") -> list:
-    """High-accuracy transcription with universal chunking for long audio (1000+ plates) and strict 17 Saudi letters enforcement"""
+    """High-accuracy parallel transcription with universal chunking for long audio (1000+ plates) and strict 17 Saudi letters enforcement"""
     if not audio_data:
         return []
         
     # Chunk long audio into ~60s segments (e.g. 19 min audio -> 19 clean chunks)
     chunks = slice_any_audio(audio_data, chunk_duration_sec=60.0, overlap_sec=2.0)
-    print(f"[Audio Processing] Sliced audio into {len(chunks)} chunk(s) for deep analysis.")
+    print(f"[Audio Processing] Sliced audio into {len(chunks)} chunk(s). Processing in parallel...")
     
-    prompt = (
-        "أنت نظام ذكاء اصطناعي فائق الدقة متخصص حصرياً في تفريغ واستخراج أرقام وبيانات لوحات السيارات السعودية من الصوت بدقة 100% وبدون أي اختراع أو تخمين.\n"
-        "المطلوب بدقة متناهية:\n"
-        "1. استمع للتسجيل الصوتي واكتب كل لوحة نطقها المتحدث بدون استثناء وبالترتيب الزمني الدقيق.\n"
-        "2. ⚠️ الحروف المعتمدة في لوحات السعودية 17 حرفاً فقط:\n"
-        "   (أ ، ب ، ح ، د ، ر ، س ، ص ، ط ، ع ، ق ، ك ، ل ، م ، ن ، هـ ، و ، ي)\n"
-        "   - إذا نطق اسم الحرف (كاف=ك، دال=د، ميم=م، باء=ب، ألف=أ، واو=و، قاف=ق، عين=ع، سين=س، هاء=هـ...).\n"
-        "   - صيغة اللوحة: 3 حروف متباعدة + 1 إلى 4 أرقام (مثال: 'ك د م 958' أو 'د ب أ 9075' أو 'أ ع ب 087').\n"
-        "3. ⚠️ كلمات ليست لوحات: الكلمات مثل (رقم ، عين ، سين ، حسب ، دون ، فاصل ، لوحة) هي كلمات وصفية ولا تُعتبر لوحة.\n"
-        "4. الأرقام: اكتب الأرقام بدقة كاملة كما نُطقت سواء كانت مفردة أو مركبة (مثال: 'تسعمائة وثمانية وخمسين' = 958، 'ألف ومائتين وأربعة وثلاثين' = 1234، 'صفر سبعة وثمانين' = 087، 'واحد اثنين ثلاثة أربعة' = 1234).\n"
-        "5. نوع السيارة والشارع والملاحظات:\n"
-        "   - إذا ذكر المتحدث نوع السيارة (مثل: باص، هايلوكس، كامري، يارس، نقل...) اكتبه في vehicle_type.\n"
-        "   - ⚠️ إذا لم يذكر نوع السيارة، اتركه فارغاً \"\" (لا تكتب تويوتا من رأسك أبداً).\n"
-        "   - إذا قال شارع كذا أو طريق كذا → اكتب في street_name.\n"
-        "   - إذا قال حي كذا → اكتب في district_name.\n"
-        "   - إذا قال ملاحظات (سليمة، مصدومة...) → اكتب في notes.\n"
-        "6. تصحيح النطق: إذا قال 'تعديل' أو 'قصدي' أو 'لا' أو 'معليش' بعد لوحة، استبدل اللوحة السابقة باللوحة المصححة.\n"
-        "7. مصفوفة JSON فقط بالشكل التالي:\n"
-        '[{"plate": "ك د م 958", "found": true, "vehicle_type": "", "street_name": "", "district_name": "", "notes": "", "street_location": ""}]\n'
-        "إذا كان التسجيل صامتاً أو لم يذكر أي لوحة، أرجع: []"
-    )
+    prompt = """أنت نظام ذكاء اصطناعي فائق الدقة متخصص حصرياً في تفريغ واستخراج أرقام وبيانات لوحات السيارات السعودية من الصوت بدقة 100% وبدون أي اختراع أو تخمين.
+المطلوب بدقة متناهية:
+1. استمع للتسجيل الصوتي واكتب كل لوحة نطقها المتحدث بدون استثناء وبالترتيب الزمني الدقيق.
+2. ⚠️ الحروف المعتمدة في لوحات السعودية 17 حرفاً فقط:
+   (أ ، ب ، ح ، د ، ر ، س ، ص ، ط ، ع ، ق ، ك ، ل ، م ، ن ، هـ ، و ، ي)
+   - إذا نطق اسم الحرف (كاف=ك، دال=د، ميم=م، باء=ب، ألف=أ، واو=و، قاف=ق، عين=ع، سين=س، هاء=هـ...).
+   - صيغة اللوحة: 3 حروف متباعدة + 1 إلى 4 أرقام (مثال: 'ك د م 958' أو 'د ب أ 9075' أو 'أ ع ب 087').
+3. ⚠️ كلمات ليست لوحات: الكلمات مثل (رقم ، عين ، سين ، حسب ، دون ، فاصل ، لوحة) هي كلمات وصفية ولا تُعتبر لوحة.
+4. الأرقام: اكتب الأرقام بدقة كاملة كما نُطقت سواء كانت مفردة أو مركبة (مثال: 'تسعمائة وثمانية وخمسين' = 958، 'ألف ومائتين وأربعة وثلاثين' = 1234، 'صفر سبعة وثمانين' = 087، 'واحد اثنين ثلاثة أربعة' = 1234).
+5. نوع السيارة والشارع والملاحظات:
+   - إذا ذكر المتحدث نوع السيارة (مثل: باص، هايلوكس، كامري، يارس، نقل...) اكتبه في vehicle_type.
+   - ⚠️ إذا لم يذكر نوع السيارة، اتركه فارغاً "" (لا تكتب تويوتا من رأسك أبداً).
+   - إذا قال شارع كذا أو طريق كذا → اكتب في street_name.
+   - إذا قال حي كذا → اكتب في district_name.
+   - إذا قال ملاحظات (سليمة، مصدومة...) → اكتب في notes.
+6. تصحيح النطق: إذا قال 'تعديل' أو 'قصدي' أو 'لا' أو 'معليش' بعد لوحة، استبدل اللوحة السابقة باللوحة المصححة.
+7. مصفوفة JSON فقط بالشكل التالي:
+[{"plate": "ك د م 958", "found": true, "vehicle_type": "", "street_name": "", "district_name": "", "notes": "", "street_location": ""}]
+إذا كان التسجيل صامتاً أو لم يذكر أي لوحة، أرجع: []"""
     
-    chunks_results = []
-    for c_idx, chunk in enumerate(chunks):
-        chunk_plates = []
-        try:
-            mime_type, _ = _detect_audio_info(chunk)
-            b64_audio = base64.b64encode(chunk).decode("utf-8")
-            payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
-                    ]
-                }],
-                "generationConfig": {
-                    "response_mime_type": "application/json",
-                    "temperature": 0.0,
-                    "max_output_tokens": 8192
-                }
-            }
-            res_json = _call_gemini_with_rotation(cfg, payload, "gemini-flash-lite-latest", kind=kind)
-            raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
-            clean_text = raw_text.strip()
-            if clean_text.startswith("```json"): clean_text = clean_text[7:]
-            if clean_text.startswith("```"): clean_text = clean_text[3:]
-            if clean_text.endswith("```"): clean_text = clean_text[:-3]
-            parsed = json.loads(clean_text.strip())
-            if isinstance(parsed, dict): parsed = [parsed]
-            if isinstance(parsed, list):
-                for p in parsed:
-                    cl = clean_saudi_plate(p.get("plate", ""))
-                    if cl:
-                        p["plate"] = cl
-                        if p.get("vehicle_type") == "تويوتا" and "تويوتا" not in str(p):
-                            p["vehicle_type"] = ""
-                        chunk_plates.append(p)
-            print(f"[Chunk {c_idx+1}/{len(chunks)}] Extracted {len(chunk_plates)} plate(s).")
-        except Exception as gem_err:
-            print(f"[Chunk {c_idx+1}/{len(chunks)} Gemini Error] {gem_err}, trying fallback...")
-            try:
-                groq_p = _call_groq_whisper(cfg, chunk)
-                if groq_p:
-                    for p in groq_p:
-                        cl = clean_saudi_plate(p.get("plate", ""))
-                        if cl:
-                            p["plate"] = cl
-                            chunk_plates.append(p)
-            except Exception as ge:
-                print(f"[Chunk {c_idx+1} Fallback Error] {ge}")
-        
-        chunks_results.append(chunk_plates)
+    tasks = [(i, len(chunks), c, cfg, prompt, kind) for i, c in enumerate(chunks)]
+    
+    # Process up to 4 chunks in parallel for 4x faster execution
+    from concurrent.futures import ThreadPoolExecutor
+    max_workers = min(4, len(chunks)) if len(chunks) > 1 else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        chunks_results = list(executor.map(_process_single_chunk, tasks))
             
     final_plates = _dedup_boundary_plates(chunks_results)
     print(f"[Gemini Universal Audio Parser OK] Total Extracted: {len(final_plates)} plates across {len(chunks)} chunk(s).")
     return final_plates
 
-
-
-@app.post("/api/process")
-async def process_audio(request: Request):
-    job_id = f"job_{uuid.uuid4().hex[:16]}"
-    cfg = load_config()
-
+async def _run_background_transcribe(job_id: str, cfg: dict, audio_data: bytes, model_name: str, recorder_name: str, district: str, gps_data_raw: str):
+    """Asynchronous background worker to process large audio files without blocking the HTTP request."""
     try:
-        form = await request.form()
-        audio_file = form.get("audio")
-        model_name = str(form.get("model_name") or cfg.get("gemini_model", "gemini-flash-lite-latest"))
-        recorder_name = str(form.get("recorder_name") or "")
-        district = str(form.get("district_default") or "")
-        gps_data_raw = form.get("gps_data")
-
-        if audio_file:
-            content = await audio_file.read()
-            print(f"[Process Audio] Received file: {getattr(audio_file, 'filename', 'audio')}, size: {len(content)} bytes")
-            plates = await asyncio.to_thread(_transcribe_dual_engine, cfg, content, model_name, "rest")
-            print(f"[Process Audio] Job {job_id} extracted plates count: {len(plates)}")
-        else:
-            plates = []
-
+        loop = asyncio.get_running_loop()
+        plates = await loop.run_in_executor(None, _transcribe_dual_engine, cfg, audio_data, model_name, "rest")
+        
         # Parse and format GPS points list
         formatted_gps_list = []
         if gps_data_raw:
@@ -1319,22 +1308,16 @@ async def process_audio(request: Request):
             except Exception:
                 pass
 
-        # Distribute GPS coordinates across plates 1-to-1 chronologically
         num_plates = len(plates)
         num_gps = len(formatted_gps_list)
-
         from datetime import datetime
         current_date_str = datetime.now().strftime("%d/%m/%Y")
 
         for idx, p in enumerate(plates):
             plate_gps = ""
             if num_gps > 0:
-                if num_plates <= num_gps:
-                    g_idx = int(idx * (num_gps - 1) / max(1, num_plates - 1)) if num_plates > 1 else 0
-                    plate_gps = formatted_gps_list[min(g_idx, num_gps - 1)]
-                else:
-                    g_idx = int(idx * (num_gps - 1) / max(1, num_plates - 1)) if num_plates > 1 else 0
-                    plate_gps = formatted_gps_list[min(g_idx, num_gps - 1)]
+                g_idx = int(idx * (num_gps - 1) / max(1, num_plates - 1)) if num_plates > 1 else 0
+                plate_gps = formatted_gps_list[min(g_idx, num_gps - 1)]
 
             if plate_gps:
                 p["gps"] = plate_gps
@@ -1351,24 +1334,56 @@ async def process_audio(request: Request):
         JOB_STORE[job_id] = {
             "status": "done",
             "plates": plates,
+            "total": len(plates),
             "recorder_name": recorder_name,
             "district": district
         }
-
-
+        print(f"[Background Job {job_id}] Successfully finished! Total extracted: {len(plates)} plates.")
     except Exception as e:
-        print(f"Process audio error: {e}")
+        print(f"[Background Job {job_id} Error] {e}")
         JOB_STORE[job_id] = {
-            "status": "done",
-            "plates": [],
-            "error": str(e)
+            "status": "error",
+            "detail": f"خطأ أثناء معالجة الصوت: {e}",
+            "plates": []
         }
 
-    return {
-        "status": "ok",
-        "job_id": job_id,
-        "message": "جاري معالجة الصوت..."
-    }
+@app.post("/api/process")
+async def process_audio(request: Request):
+    job_id = f"job_{uuid.uuid4().hex[:16]}"
+    cfg = load_config()
+
+    try:
+        form = await request.form()
+        audio_file = form.get("audio")
+        model_name = str(form.get("model_name") or cfg.get("gemini_model", "gemini-flash-lite-latest"))
+        recorder_name = str(form.get("recorder_name") or "")
+        district = str(form.get("district_default") or "")
+        gps_data_raw = form.get("gps_data")
+
+        if not audio_file:
+            raise HTTPException(status_code=400, detail="لا يوجد ملف صوتي")
+
+        content = await audio_file.read()
+        print(f"[Process Audio] Received file: {getattr(audio_file, 'filename', 'audio')}, size: {len(content)} bytes. Starting async background task {job_id}...")
+
+        # Initialize job store with pending state
+        JOB_STORE[job_id] = {
+            "status": "pending",
+            "progress": 5,
+            "plates": []
+        }
+
+        # Launch background task non-blocking
+        asyncio.create_task(_run_background_transcribe(job_id, cfg, content, model_name, recorder_name, district, gps_data_raw))
+
+        # Return immediately in <10ms to prevent HTTP 502/Gateway Timeout
+        return {
+            "status": "ok",
+            "job_id": job_id,
+            "message": "جاري معالجة الصوت في الخلفية..."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/transcribe/status/{job_id}")
