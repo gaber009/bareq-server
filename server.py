@@ -1091,14 +1091,20 @@ def _dedup_boundary_plates(chunks_plates_list: list) -> list:
             final_plates.append(p)
     return final_plates
 
+_GEMINI_KEY_INDEX = 0
+
 def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: str = "rest") -> dict:
     """Call Gemini API with automatic key AND verified model rotation on 429/503/404."""
+    global _GEMINI_KEY_INDEX
+    import requests
     import time
+
     FALLBACK_MODELS = [
         "gemini-flash-lite-latest",
-        "gemini-flash-latest",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
         "gemini-2.5-flash",
-        "gemma-4-31b-it",
+        "gemini-1.5-pro",
     ]
 
     pool_field = "gemini_rest_keys" if kind == "rest" else "gemini_live_keys"
@@ -1109,46 +1115,37 @@ def _call_gemini_with_rotation(cfg: dict, payload: dict, model_name: str, kind: 
     if not keys:
         raise Exception("لا يوجد مفتاح Gemini — أضف مفتاحاً من لوحة الإدارة")
 
-    req_timeout = 15 if kind == "live" else 120
+    req_timeout = 15 if kind == "live" else 60
     models_to_try = [model_name] if model_name in FALLBACK_MODELS else []
     for m in FALLBACK_MODELS:
         if m not in models_to_try:
             models_to_try.append(m)
 
+    # Start with round-robin key offset to distribute load
+    start_key_idx = _GEMINI_KEY_INDEX % len(keys)
+    _GEMINI_KEY_INDEX += 1
+    ordered_keys = keys[start_key_idx:] + keys[:start_key_idx]
+
     last_err = None
     for model in models_to_try:
-        for key in keys:
+        for key in ordered_keys:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             try:
                 resp = requests.post(url, json=payload, timeout=req_timeout)
                 if resp.status_code == 200:
-                    print(f"[Gemini OK] model={model}, key=...{key[-6:]}")
                     return resp.json()
                 elif resp.status_code in (404, 429, 500, 502, 503, 504):
-                    print(f"[Gemini {resp.status_code}] on {model}/...{key[-6:]}, rotating...")
                     last_err = f"{resp.status_code} on {model}"
+                    time.sleep(0.3)
                     continue
                 else:
-                    raise Exception(f"Gemini API error {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.RequestException as e:
-                print(f"[Gemini Network error] {model}/...{key[-6:]}: {type(e).__name__}")
-                last_err = f"Network error: {e}"
+                    last_err = f"HTTP {resp.status_code}: {resp.text[:150]}"
+                    continue
+            except Exception as e:
+                last_err = f"Request error: {e}"
                 continue
 
-    if kind != "live":
-        time.sleep(2)
-        for model in models_to_try:
-            for key in keys:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                try:
-                    resp = requests.post(url, json=payload, timeout=req_timeout)
-                    if resp.status_code == 200:
-                        return resp.json()
-                except Exception:
-                    continue
-
     raise Exception(last_err or "All Gemini models and keys exhausted")
-
 
 def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
     """Ultra-fast Whisper transcription via Groq with unbiased vocabulary prompt and dual-layer parser"""
@@ -1158,50 +1155,36 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
     
     if not groq_keys:
         return []
-    
-    mime_type, ext = _detect_audio_info(audio_data)
-    filename = f"speech.{ext}"
-    
-    for key in groq_keys:
+
+    for gkey in groq_keys:
         try:
-            headers = {"Authorization": f"Bearer {key}"}
-            files = {"file": (filename, audio_data, mime_type)}
+            headers = {"Authorization": f"Bearer {gkey}"}
+            files = {"file": ("audio.wav", audio_data, "audio/wav")}
             data = {
-                "model": "whisper-large-v3-turbo",
+                "model": "whisper-large-v3",
                 "language": "ar",
                 "temperature": "0.0",
                 "prompt": (
-                    "تسجيل صوتي لتسميع لوحات سيارات سعودية. كل لوحة = 3 حروف + أرقام. "
-                    "مثال: دال باء ألف تسعة صفر سبعة خمسة = د ب أ 9075. "
-                    "تمييز مهم: كاف (ك) ≠ قاف (ق). "
-                    "كاف/كيف → ك. قاف/قيف/صوت G → ق. "
-                    "أمثلة: دال كاف هاء 3560، دال قاف هاء 8565. "
-                    "ألف باء تاء ثاء جيم حاء خاء دال ذال راء زين سين شين صاد ضاد طاء ظاء عين غين فاء قاف كاف لام ميم نون هاء واو ياء "
-                    "صفر واحد اثنين ثلاثة أربعة خمسة ستة سبعة ثمانية تسعة "
-                    "شارع طريق حي ملاحظات فاصل يمين يسار"
+                    "لوحة سيارة سعودية: أ ب ح د ر س ص ط ع ق ك ل م ن هـ و ي "
+                    "ألف باء حاء دال راء سين صاد طاء عين قاف كاف لام ميم نون هاء واو ياء "
+                    "ك د م 958 د ب أ 9075 أ ع ب 087 "
+                    "شارع طريق حي ملاحظات باص هايلوكس دينا كامري نقل"
                 )
             }
-            resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=12)
+            resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=15)
             if resp.status_code == 200:
                 transcribed = resp.json().get("text", "")
                 print(f"[Groq Whisper OK] Transcribed: '{transcribed}'")
-                plates = _parse_plates_from_arabic_text(transcribed)
-                if plates:
-                    return plates
                 
-                # If regex didn't find plates but text exists, ask Gemini text model to extract plates from transcript
+                # Extract plates from transcript using Gemini Text Model
                 if transcribed and len(transcribed.strip()) > 2:
                     try:
-                        text_prompt = (
-                            f"أنت خبير استخراج لوحات سيارات سعودية. استخرج جميع اللوحات المذكورة في هذا النص بالضبط كما نُطقت:\n"
-                            f"\"{transcribed}\"\n"
-                            f"⚠️ الحروف المسموحة حصرياً 17 حرفاً فقط: (أ ب ح د ر س ص ط ع ق ك ل م ن هـ و ي)\n"
-                            f"⚠️ يُمنع استخدام: (ج ت ث خ ذ ز ش ض ظ غ ف ئ ة)\n"
-                            f"⚠️ كلمات مثل (رقم، عين، سين، حسب، دون، فاصل، لوحة) ليست لوحات.\n"
-                            f"⚠️ إذا لم يُذكر نوع السيارة صراحةً، اترك vehicle_type فارغاً \"\".\n"
-                            f"أرجع مصفوفة JSON فقط بالشكل:\n"
-                            f'[{{"plate": "ك د م 958", "found": true, "vehicle_type": "", "notes": ""}}]'
-                        )
+                        text_prompt = f"""أنت خبير استخراج لوحات سيارات سعودية. استخرج جميع اللوحات المذكورة في هذا النص بدقة 100%:
+{transcribed}
+⚠️ الحروف المعتمدة 17 حرفاً فقط: (أ ب ح د ر س ص ط ع ق ك ل م ن هـ و ي)
+⚠️ صيغة اللوحة: 3 حروف متباعدة + 1 إلى 4 أرقام (مثال: 'ك د م 958').
+⚠️ أرجع مصفوفة JSON فقط بالشكل:
+[{{"plate": "ك د م 958", "found": true, "vehicle_type": "", "street_name": "", "district_name": "", "notes": "", "street_location": ""}}]"""
                         payload = {
                             "contents": [{"parts": [{"text": text_prompt}]}],
                             "generationConfig": {"response_mime_type": "application/json", "temperature": 0.0}
@@ -1223,22 +1206,22 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
                                         p["vehicle_type"] = ""
                                     cleaned_list.append(p)
                             if cleaned_list:
-                                print(f"[Gemini Text Parser OK] Extracted: {cleaned_list}")
                                 return cleaned_list
                     except Exception as te:
-                        print(f"[Gemini Text Parser Error] {te}")
-            else:
-                print(f"[Groq Whisper] HTTP {resp.status_code}: {resp.text[:120]}")
-        except Exception as e:
-            print(f"[Groq Whisper Error] {e}")
+                        print(f"[Gemini Text Parser from Groq Error] {te}")
+        except Exception as ge:
+            print(f"[Groq Key Error] {ge}")
+            continue
+
     return []
 
 
-
 def _process_single_chunk(chunk_data: tuple) -> list:
-    """Worker to process a single audio chunk with Gemini rotation and Groq fallback"""
+    """Worker to process a single audio chunk with Gemini Audio -> Groq Whisper -> Gemini Text fallback"""
     c_idx, total_chunks, chunk, cfg, prompt, kind = chunk_data
     chunk_plates = []
+    
+    # 1. Try Gemini Multimodal Audio first
     try:
         mime_type, _ = _detect_audio_info(chunk)
         b64_audio = base64.b64encode(chunk).decode("utf-8")
@@ -1256,12 +1239,11 @@ def _process_single_chunk(chunk_data: tuple) -> list:
             }
         }
         res_json = _call_gemini_with_rotation(cfg, payload, "gemini-flash-lite-latest", kind=kind)
-        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
-        clean_text = raw_text.strip()
-        if clean_text.startswith("```json"): clean_text = clean_text[7:]
-        if clean_text.startswith("```"): clean_text = clean_text[3:]
-        if clean_text.endswith("```"): clean_text = clean_text[:-3]
-        parsed = json.loads(clean_text.strip())
+        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if raw_text.startswith("```json"): raw_text = raw_text[7:]
+        if raw_text.startswith("```"): raw_text = raw_text[3:]
+        if raw_text.endswith("```"): raw_text = raw_text[:-3]
+        parsed = json.loads(raw_text.strip())
         if isinstance(parsed, dict): parsed = [parsed]
         if isinstance(parsed, list):
             for p in parsed:
@@ -1271,29 +1253,36 @@ def _process_single_chunk(chunk_data: tuple) -> list:
                     if p.get("vehicle_type") == "تويوتا" and "تويوتا" not in str(p):
                         p["vehicle_type"] = ""
                     chunk_plates.append(p)
-        print(f"[Chunk {c_idx+1}/{total_chunks}] Extracted {len(chunk_plates)} plate(s).")
+        if chunk_plates:
+            print(f"[Chunk {c_idx+1}/{total_chunks} Gemini Audio OK] Extracted {len(chunk_plates)} plate(s).")
+            return chunk_plates
     except Exception as gem_err:
-        print(f"[Chunk {c_idx+1}/{total_chunks} Gemini Error] {gem_err}, trying fallback...")
-        try:
-            groq_p = _call_groq_whisper(cfg, chunk)
-            if groq_p:
-                for p in groq_p:
-                    cl = clean_saudi_plate(p.get("plate", ""))
-                    if cl:
-                        p["plate"] = cl
-                        chunk_plates.append(p)
-        except Exception as ge:
-            print(f"[Chunk {c_idx+1} Fallback Error] {ge}")
+        print(f"[Chunk {c_idx+1}/{total_chunks} Gemini Audio Error] {gem_err}")
+
+    # 2. Dual-Engine Fallback: Groq Whisper -> Gemini Text Extraction
+    try:
+        groq_plates = _call_groq_whisper(cfg, chunk)
+        if groq_plates:
+            for p in groq_plates:
+                cl = clean_saudi_plate(p.get("plate", ""))
+                if cl:
+                    p["plate"] = cl
+                    chunk_plates.append(p)
+            print(f"[Chunk {c_idx+1}/{total_chunks} Groq Fallback OK] Extracted {len(chunk_plates)} plate(s).")
+            return chunk_plates
+    except Exception as ge:
+        print(f"[Chunk {c_idx+1} Groq Fallback Error] {ge}")
+
     return chunk_plates
 
-def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "live") -> list:
-    """High-accuracy parallel transcription with universal chunking for long audio (1000+ plates) and strict 17 Saudi letters enforcement"""
+def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "rest") -> list:
+    """High-accuracy sequential/parallel transcription with universal chunking for long audio (1000+ plates) and strict 17 Saudi letters enforcement"""
     if not audio_data:
         return []
         
-    # Chunk long audio into ~60s segments (e.g. 19 min audio -> 19 clean chunks)
+    # Chunk long audio into ~60s segments (e.g. 13 min audio -> 13 clean chunks)
     chunks = slice_any_audio(audio_data, chunk_duration_sec=60.0, overlap_sec=2.0)
-    print(f"[Audio Processing] Sliced audio into {len(chunks)} chunk(s). Processing in parallel...")
+    print(f"[Audio Processing] Sliced audio into {len(chunks)} chunk(s) for deep analysis.")
     
     prompt = """أنت نظام ذكاء اصطناعي فائق الدقة متخصص حصرياً في تفريغ واستخراج أرقام وبيانات لوحات السيارات السعودية من الصوت بدقة 100% وبدون أي اختراع أو تخمين.
 المطلوب بدقة متناهية:
@@ -1317,9 +1306,9 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
     
     tasks = [(i, len(chunks), c, cfg, prompt, kind) for i, c in enumerate(chunks)]
     
-    # Process up to 4 chunks in parallel for 4x faster execution
+    # Process with 2 workers and pacing to respect Gemini rate limits
     from concurrent.futures import ThreadPoolExecutor
-    max_workers = min(4, len(chunks)) if len(chunks) > 1 else 1
+    max_workers = min(2, len(chunks)) if len(chunks) > 1 else 1
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         chunks_results = list(executor.map(_process_single_chunk, tasks))
             
