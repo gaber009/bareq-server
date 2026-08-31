@@ -1500,11 +1500,16 @@ async def process_audio(request: Request):
 
 @app.get("/api/transcribe/status/{job_id}")
 async def transcribe_status(job_id: str):
-    # Wait briefly to simulate async processing
     result = JOB_STORE.get(job_id)
     if not result:
-        # Still processing - return pending
-        return {"status": "pending", "progress": 50}
+        return {"status": "pending", "progress": 10}
+    
+    job_status = result.get("status", "pending")
+    if job_status in ("pending", "processing"):
+        return {"status": "pending", "progress": result.get("progress", 50)}
+        
+    if job_status == "error":
+        return {"status": "error", "detail": result.get("detail", "حدث خطأ أثناء معالجة الصوت")}
     
     plates = result.get("plates", [])
     return {
