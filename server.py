@@ -1347,6 +1347,98 @@ async def _run_background_transcribe(job_id: str, cfg: dict, audio_data: bytes, 
             "plates": []
         }
 
+@app.post("/api/check-turn")
+async def check_turn(request: Request):
+    """
+    Ultra-low latency (<600ms) synchronous transcription for live Check Session turns.
+    High phonetic fidelity for Arabic letter names (راء/ح/ميم) and strict 17 Saudi letters enforcement.
+    """
+    cfg = load_config()
+    try:
+        form = await request.form()
+        audio_file = form.get("audio")
+        if not audio_file:
+            return {"status": "ok", "plates": [], "total": 0}
+
+        content = await audio_file.read()
+        if len(content) < 400:
+            return {"status": "ok", "plates": [], "total": 0}
+
+        prompt = """أنت نظام ذكاء اصطناعي فائق الدقة متخصص في تفريغ لوحات السيارات السعودية بدقة 100% وبدون أي تخمين.
+المطلوب بدقة متناهية:
+1. استمع للصوت واستخرج اللوحة التي نطقها المتحدث كما نُطقت تماماً.
+2. ⚠️ تمييز صوت واسم الحرف (17 حرفاً معتمداً فقط):
+   - حرف الراء: (راء / را / ر) → ر (مثال: 'ر ح م 3830' = راء حاء ميم 3830).
+   - حرف الحاء: (حاء / حا / ح) → ح
+   - حرف الميم: (ميم / ما / م) → م
+   - حرف السين: (سين / سا / س) → س
+   - حرف الدال: (دال / دا / د) → د
+   - حرف الكاف: (كاف / كا / ك) → ك
+   - حرف الباء: (باء / با / ب) → ب
+   - حرف الألف: (ألف / ا / أ) → أ
+   - حرف الصاد: (صاد / صا / ص) → ص
+   - حرف الطاء: (طاء / طا / ط) → ط
+   - حرف العين: (عين / عا / ع) → ع
+   - حرف القاف: (قاف / قا / ق) → ق
+   - حرف اللام: (لام / لا / ل) → ل
+   - حرف النون: (نون / نا / ن) → ن
+   - حرف الهاء: (هاء / ها / هـ) → هـ
+   - حرف الواو: (واو / و) → و
+   - حرف الياء: (ياء / يا / ي) → ي
+3. ⚠️ الصيغة القياسية: 3 حروف متباعدة + 1 إلى 4 أرقام (مثال: 'ر ح م 3830').
+4. أرجع مصفوفة JSON فقط بالشكل التالي:
+[{"plate": "ر ح م 3830", "found": false, "vehicle_type": "", "notes": ""}]
+إذا لم تكن هناك لوحة أو كان الصوت صامتاً، أرجع: []"""
+
+        mime_type, _ = _detect_audio_info(content)
+        b64_audio = base64.b64encode(content).decode("utf-8")
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type, "data": b64_audio}}
+                ]
+            }],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "temperature": 0.0,
+                "max_output_tokens": 1024
+            }
+        }
+
+        # Direct fast invocation of Gemini
+        res_json = await asyncio.to_thread(_call_gemini_with_rotation, cfg, payload, "gemini-flash-lite-latest", "live")
+        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if raw_text.startswith("```json"): raw_text = raw_text[7:]
+        if raw_text.startswith("```"): raw_text = raw_text[3:]
+        if raw_text.endswith("```"): raw_text = raw_text[:-3]
+        parsed = json.loads(raw_text.strip())
+        if isinstance(parsed, dict): parsed = [parsed]
+        plates = []
+        if isinstance(parsed, list):
+            for p in parsed:
+                cl = clean_saudi_plate(p.get("plate", ""))
+                if cl:
+                    p["plate"] = cl
+                    if p.get("vehicle_type") == "تويوتا" and "تويوتا" not in str(p):
+                        p["vehicle_type"] = ""
+                    plates.append(p)
+        return {"status": "ok", "plates": plates, "total": len(plates)}
+    except Exception as e:
+        print(f"[/api/check-turn error] {e}, falling back to Groq...")
+        try:
+            groq_p = await asyncio.to_thread(_call_groq_whisper, cfg, content)
+            cleaned = []
+            for p in groq_p:
+                cl = clean_saudi_plate(p.get("plate", ""))
+                if cl:
+                    p["plate"] = cl
+                    cleaned.append(p)
+            return {"status": "ok", "plates": cleaned, "total": len(cleaned)}
+        except Exception:
+            return {"status": "ok", "plates": [], "total": 0}
+
+
 @app.post("/api/process")
 async def process_audio(request: Request):
     job_id = f"job_{uuid.uuid4().hex[:16]}"
