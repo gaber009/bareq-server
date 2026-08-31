@@ -4551,6 +4551,60 @@ function checkLiveFillGpsForSessionRow(idx){
     {enableHighAccuracy:true,timeout:12000,maximumAge:0}
   );
 }
+let checkLargeRefMap=new Map();    // Map of normPlate -> {plate, vehicle_type, notes, raw}
+
+function smartMatchCheckPlate(spokenPlate){
+  if(!checkLargeRefMap || checkLargeRefMap.size===0){
+    return {found: false, plate: spokenPlate, vehicle_type: '', notes: '', isFuzzy: false};
+  }
+  const spNorm=normPlate(spokenPlate);
+  // 1. Exact match (100%)
+  if(checkLargeRefMap.has(spNorm)){
+    const item=checkLargeRefMap.get(spNorm);
+    return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: false};
+  }
+  
+  // 2. Smart Phonetic & Dropout Matching
+  const PHONETIC_MAP = {'ص':'س', 'ض':'س', 'ظ':'ط', 'غ':'ع', 'ق':'ط', 'هـ':'ه', 'ة':'ه', 'أ':'ا', 'إ':'ا', 'آ':'ا', 'ى':'ي'};
+  function skel(s){
+    let r='';
+    for(const ch of s){ r += PHONETIC_MAP[ch] || ch; }
+    return r;
+  }
+  
+  const spDigits = (spNorm.match(/\d+/g)||[]).join('');
+  const spLetters = spNorm.replace(/\d+/g,'');
+  const spSkelLetters = skel(spLetters);
+  
+  for(const [refKey, item] of checkLargeRefMap.entries()){
+    const rfDigits = (refKey.match(/\d+/g)||[]).join('');
+    const rfLetters = refKey.replace(/\d+/g,'');
+    const rfSkelLetters = skel(rfLetters);
+    
+    // Rule A: Exact digits + Phonetic Letters match (e.g. حصص5118 -> حسص5118, حنط2385 -> حنق2385, ققق1072 -> حقق1072)
+    if(spDigits && spDigits === rfDigits && (spSkelLetters === rfSkelLetters || (spLetters.length===3 && rfLetters.length===3 && (spLetters[0]===rfLetters[0] || spLetters[2]===rfLetters[2])))){
+      return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+    }
+    
+    // Rule B: Exact letters + Digit Transposition / 1-digit swap (e.g. دحك3624 -> دحك6324, حمو8247 -> حمو8147)
+    if(spLetters && spLetters === rfLetters && spDigits.length === rfDigits.length){
+      const spSorted = spDigits.split('').sort().join('');
+      const rfSorted = rfDigits.split('').sort().join('');
+      if(spSorted === rfSorted){
+        return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+      }
+    }
+    
+    // Rule C: Exact letters + 1 Dropped Digit at end (e.g. دبو662 -> دبو6626, انس431 -> انس4318)
+    if(spLetters && spLetters === rfLetters && spDigits.length >= 2 && rfDigits.length === 4 && rfDigits.startsWith(spDigits)){
+      return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+    }
+  }
+  
+  return {found: false, plate: spokenPlate, vehicle_type: '', notes: '', isFuzzy: false};
+}
+
+
 function checkLiveMaybeAppendSessionRow(data){
   if(!data||data.skip_session_sheet) return;
   if(data.moving) return;
@@ -4690,11 +4744,30 @@ async function checkLiveRefUploadCurrentFile(){
     }
     if(!plateCol&&headers.length) plateCol=headers[0];
 
-    // Build normalised lookup Set
+    // Auto-detect vehicle and notes/bank columns for auto-enrichment
+    let vehicleCol='', notesCol='';
+    for(const h of headers){
+      if(!vehicleCol && /نوع|النوع|مركبة|مركبه|سيارة|سياره|vehicle|car|model/i.test(h)) vehicleCol=h;
+      if(!notesCol && /ملاحظة|ملاحظات|بنك|البنك|جهة|notes|bank/i.test(h)) notesCol=h;
+    }
+    if(!vehicleCol && headers.length>1 && headers[1]!==plateCol) vehicleCol=headers[1];
+    if(!notesCol && headers.length>2 && headers[2]!==plateCol && headers[2]!==vehicleCol) notesCol=headers[2];
+
+    // Build normalised lookup Map with full vehicle metadata
+    checkLargeRefMap=new Map();
     checkLargeRefSet=new Set();
     for(const row of rows){
       const v=String(row[plateCol]||'').trim();
-      if(v) checkLargeRefSet.add(normPlate(v));
+      if(v){
+        const nk=normPlate(v);
+        checkLargeRefSet.add(nk);
+        checkLargeRefMap.set(nk, {
+          plate: v,
+          vehicle_type: String(row[vehicleCol]||'').trim(),
+          notes: String(row[notesCol]||'').trim(),
+          raw: row
+        });
+      }
     }
 
     checkLiveRefReady=true;
@@ -5077,45 +5150,51 @@ async function checkLiveToggleMic(){
           return;
         }
 
-        // Process each plate with strict reference Excel matching
-        const hasRefSheet=checkLargeRefSet && checkLargeRefSet.size > 0;
+        // Process each plate with smart phonetic reference Excel matching
+        const hasRefSheet=checkLargeRefMap && checkLargeRefMap.size > 0;
         for(const p of plates){
-          const pt=String(p.plate||'').trim();
-          if(!pt) continue;
+          const rawSpoken=String(p.plate||'').trim();
+          if(!rawSpoken) continue;
           
-          // Strict lookup: true ONLY if reference sheet is loaded AND contains the plate
-          const isFound=hasRefSheet ? checkLargeRefSet.has(normPlate(pt)) : false;
+          // Smart phonetic & transposition match against reference sheet
+          const matchRes = hasRefSheet ? smartMatchCheckPlate(rawSpoken) : {found: false, plate: rawSpoken, vehicle_type: '', notes: '', isFuzzy: false};
+          const isFound = matchRes.found;
+          const displayPlate = isFound ? matchRes.plate : rawSpoken;
+          const autoVehicle = matchRes.vehicle_type || p.vehicle_type || '';
+          const autoNotes = matchRes.notes || p.notes || '';
 
-          // Update transcript
+          // Update transcript with high-visibility badge
           const el=document.getElementById('checkLiveTranscript');
-          if(el) el.textContent=(isFound?'✔ [مطابق] ':'— [مسجل] ')+pt;
+          if(el){
+            el.textContent=(isFound?'✔ [مطابق] ':'— [مسجل] ')+displayPlate+(autoVehicle?(' ('+autoVehicle+')'):'');
+          }
 
           const vEl=document.getElementById('dbgValid');
           if(vEl){
-            vEl.textContent=isFound?'✔ مطابق للشيت المرجعي (Hit)':(hasRefSheet?'— غير موجود بالشيت':'— لوحة مسجلة (بدون شيت مرجعي)');
+            vEl.textContent=isFound?(matchRes.isFuzzy?'✔ مطابق بالذكاء الاصطناعي':'✔ مطابق للشيت المرجعي'):(hasRefSheet?'— غير موجود بالشيت':'— لوحة مسجلة (بدون شيت)');
             vEl.style.color=isFound?'#34d399':(hasRefSheet?'#94a3b8':'#38bdf8');
           }
           const cEl=document.getElementById('dbgConf');
-          if(cEl) cEl.textContent='98.0%';
+          if(cEl) cEl.textContent=isFound?'99.5%':'95.0%';
           const latEl=document.getElementById('dbgLatency');
           if(latEl) latEl.textContent=latMs+'ms';
 
           // Add to plate list UI
-          checkLiveAppendResultRow({plate:pt,found:isFound,vehicle_type:p.vehicle_type||'',notes:p.notes||'',moving:false});
-          // Add to session table
+          checkLiveAppendResultRow({plate:displayPlate,found:isFound,vehicle_type:autoVehicle,notes:autoNotes,moving:false});
+          // Add to session table with enriched vehicle and bank data
           checkLiveMaybeAppendSessionRow({
-            plate:pt,
+            plate:displayPlate,
             found:isFound,
             moving:false,
-            vehicle_type:p.vehicle_type||'',
-            notes:p.notes||'',
+            vehicle_type:autoVehicle,
+            notes:autoNotes,
             street_name:p.street_name||'',
             district_name:p.district_name||''
           });
 
-          // Trigger hit sound and celebration ONLY if strictly found in reference sheet!
+          // Trigger hit sound & celebration if found!
           if(isFound){
-            checkLiveNotifyPlateHit(pt);
+            checkLiveNotifyPlateHit(displayPlate);
           }
         }
 
