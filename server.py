@@ -825,11 +825,31 @@ LETTER_NAMES_MAP = [
     ('ياء', 'ي'), ('يا', 'ي'),
 ]
 
+# Noise words that are NOT part of the 17 Saudi plate letters
 NON_PLATE_WORDS = {
-    'رقم', 'عين', 'سين', 'حسب', 'دون', 'فاصل', 'لوحة', 'لوحه', 'سيارة', 'سياره',
-    'مركبة', 'مركبه', 'شارع', 'طريق', 'تويوتا', 'هيونداي', 'فورد', 'نيسان', 'باص',
-    'دينا', 'نقل', 'ملاحظة', 'ملاحظات', 'تسجيل', 'تعديل', 'قصدي', 'معليش', 'سجل'
+    'رقم', 'حسب', 'دون', 'فاصل', 'لوحة', 'لوحه', 'سيارة', 'سياره',
+    'مركبة', 'مركبه', 'شارع', 'طريق', 'تويوتا', 'هيونداي', 'فورد', 'نيسان',
+    'دينا', 'ملاحظة', 'ملاحظات', 'تسجيل', 'تعديل', 'قصدي', 'معليش', 'سجل'
 }
+
+VEHICLE_PREFIXES = [
+    'سيارة تويوتا', 'سيارة هيونداي', 'سيارة نيسان', 'سيارة فورد', 'سيارة كيا',
+    'سيارة', 'سياره', 'مركبة', 'مركبه', 'عربة', 'عربه',
+    'باص', 'أتوبيس', 'اتوبيس', 'ميكروباص',
+    'دينا', 'وانيت', 'هايلوكس', 'شاحنة', 'شاحنه', 'تريلا', 'تريلة', 'صهريج', 'وايت',
+    'كامري', 'كورولا', 'يارس', 'النترا', 'أكسنت', 'اكسنت', 'سوناتا', 'كابرس',
+    'نقل خاص', 'نقل عام', 'نقل'
+]
+
+def strip_vehicle_prefix(s: str) -> str:
+    s = s.strip()
+    for vp in sorted(VEHICLE_PREFIXES, key=len, reverse=True):
+        pattern = r'^\s*' + re.escape(vp) + r'\s+'
+        if re.search(pattern, s):
+            s = re.sub(pattern, '', s).strip()
+            break
+    return s
+
 
 def clean_saudi_plate(raw_plate: str) -> str:
     """
@@ -839,7 +859,7 @@ def clean_saudi_plate(raw_plate: str) -> str:
     if not raw_plate:
         return None
     
-    s = str(raw_plate).strip()
+    s = strip_vehicle_prefix(str(raw_plate))
     
     # 1. Convert Arabic-Indic digits to standard 0-9
     indic_to_eng = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
@@ -856,13 +876,13 @@ def clean_saudi_plate(raw_plate: str) -> str:
     # 3. Strip digits and punctuation to get the letters/text portion
     text_part = re.sub(r'[\d\'\"\[\]\(\)\{\}\-_\.,:;/\\]+', ' ', s).strip()
     
-    # 4. Remove common noise words from prefix/suffix
-    for nw in sorted(NON_PLATE_WORDS, key=len, reverse=True):
-        text_part = re.sub(r'\b' + re.escape(nw) + r'\b', ' ', text_part).strip()
-    
-    # 5. Check if letters are spoken letter names (e.g. 'كاف دال ميم')
+    # 4. Check if letters are spoken letter names (e.g. 'عين سين ميم', 'كاف دال ميم') FIRST before removing noise
     for w, l in LETTER_NAMES_MAP:
-        text_part = re.sub(r'\b' + re.escape(w) + r'\b', f" {l} ", text_part)
+        text_part = re.sub(r'(?<![^\s])' + re.escape(w) + r'(?![^\s])', f" {l} ", text_part)
+        
+    # 5. Remove common noise words from prefix/suffix (only standalone noise words)
+    for nw in sorted(NON_PLATE_WORDS, key=len, reverse=True):
+        text_part = re.sub(r'(?<![^\s])' + re.escape(nw) + r'(?![^\s])', ' ', text_part).strip()
     
     # 6. Extract individual valid Arabic characters
     raw_chars = []
@@ -907,7 +927,7 @@ def clean_saudi_plate(raw_plate: str) -> str:
     
     # Check if the 3 letters form a non-plate word (e.g. ر ق م -> رقم)
     combined = (l1 + l2 + l3).replace('هـ', 'ه').replace('أ', 'ا')
-    if combined in ('رقم', 'عين', 'سين', 'حسب', 'دون', 'نقل', 'باص', 'لوح', 'سجل', 'متر', 'كيلو'):
+    if combined in ('رقم', 'حسب', 'دون', 'سجل', 'متر', 'كيلو'):
         return None
         
     return f"{l1} {l2} {l3} {digits}"
@@ -924,7 +944,7 @@ def _detect_audio_info(data: bytes) -> tuple[str, str]:
         return ("audio/ogg", "ogg")
     if data.startswith(b"ID3") or data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
         return ("audio/mp3", "mp3")
-    if b"ftyp" in data[:32] or b"moov" in data[:32] or b"mdat" in data[:32]:
+    if b"ftyp" in data[:128] or b"moov" in data[:128] or b"mdat" in data[:128] or b"isom" in data[:128] or b"mp4" in data[:128]:
         return ("audio/mp4", "mp4")
     if data.startswith(b"\xff\xf1") or data.startswith(b"\xff\xf9"):
         return ("audio/aac", "aac")
@@ -933,64 +953,6 @@ def _detect_audio_info(data: bytes) -> tuple[str, str]:
     if data.startswith(b"fLaC"):
         return ("audio/flac", "flac")
     return ("audio/mp4", "mp4")
-
-def slice_any_audio(audio_data: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
-    """
-    Universal audio slicer: converts ANY audio/video format (.wav, .mp3, .m4a, .webm, .ogg, .mp4, .aac, .amr, etc.)
-    into clean 16kHz Mono 16-bit PCM WAV chunks of ~60 seconds each.
-    Extracts 200+ plates from WhatsApp 13+ minute audio/video files reliably without missing any plate.
-    """
-    if not audio_data or len(audio_data) < 100:
-        return []
-
-    mime, ext = _detect_audio_info(audio_data)
-    import subprocess
-    import tempfile
-    import shutil
-    import wave
-    import io
-
-    temp_dir = tempfile.mkdtemp(prefix="bareq_audio_")
-    try:
-        # Save with proper extension so ffmpeg demuxers identify it immediately
-        in_path = os.path.join(temp_dir, f"input_file.{ext}")
-        with open(in_path, "wb") as f:
-            f.write(audio_data)
-
-        wav_path = os.path.join(temp_dir, "converted_16k.wav")
-        conv_cmd = [
-            "ffmpeg", "-y",
-            "-err_detect", "ignore_err",
-            "-i", in_path,
-            "-vn", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000",
-            wav_path
-        ]
-        res = subprocess.run(conv_cmd, capture_output=True, text=True, timeout=120)
-        if res.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 1000:
-            with open(wav_path, "rb") as f:
-                wav_bytes = f.read()
-            chunks = _slice_pcm_wav_bytes(wav_bytes, chunk_duration_sec, overlap_sec)
-            if chunks and len(chunks) > 0:
-                print(f"[Universal Slicer OK] Converted {ext} ({len(audio_data)} bytes) -> {len(chunks)} clean WAV chunk(s).")
-                return chunks
-        else:
-            err_msg = res.stderr[:300] if (res and res.stderr) else "unknown"
-            print(f"[Universal Slicer Warning] ffmpeg returncode={res.returncode if res else 'None'}, err: {err_msg}")
-    except Exception as fe:
-        print(f"[Universal Slicer Error] {fe}")
-    finally:
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
-
-    # 2. Native WAV slicing if it's already RIFF WAV
-    if audio_data.startswith(b"RIFF"):
-        chunks = _slice_pcm_wav_bytes(audio_data, chunk_duration_sec, overlap_sec)
-        if chunks:
-            return chunks
-
-    return [audio_data]
 
 def _slice_pcm_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
     """Slice raw PCM WAV into overlapping chunks using standard wave library."""
@@ -1036,6 +998,69 @@ def _slice_pcm_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 60.0, ove
 def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
     return slice_any_audio(wav_bytes, chunk_duration_sec, overlap_sec)
 
+
+def slice_any_audio(audio_data: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
+    """
+    Universal audio slicer: converts ANY audio/video format (.wav, .mp3, .m4a, .webm, .ogg, .mp4, .aac, .amr, etc.)
+    into clean 16kHz Mono 16-bit PCM WAV chunks of ~60 seconds each.
+    Extracts 200+ plates from WhatsApp 13+ minute audio/video files reliably without missing any plate.
+    """
+    if not audio_data or len(audio_data) < 100:
+        return []
+
+    # 1. Native WAV slicing if it's already a RIFF PCM WAV
+    if audio_data.startswith(b"RIFF") and len(audio_data) >= 44 and audio_data[8:12] == b"WAVE":
+        chunks = _slice_pcm_wav_bytes(audio_data, chunk_duration_sec, overlap_sec)
+        if chunks and len(chunks) > 1:
+            return chunks
+
+    # 2. Try ffmpeg conversion with multiple extension attempts (.mp4, .m4a, .wav, .bin)
+    mime, ext = _detect_audio_info(audio_data)
+    import subprocess
+    import tempfile
+    import shutil
+    import wave
+    import io
+
+    temp_dir = tempfile.mkdtemp(prefix="bareq_audio_")
+    try:
+        # Try extensions in order: detected ext, mp4, m4a, wav, webm, ogg
+        for trial_ext in [ext, "mp4", "m4a", "wav", "webm", "ogg"]:
+            in_path = os.path.join(temp_dir, f"input_audio_{trial_ext}.{trial_ext}")
+            with open(in_path, "wb") as f:
+                f.write(audio_data)
+
+            wav_path = os.path.join(temp_dir, f"converted_16k_{trial_ext}.wav")
+            conv_cmd = [
+                "ffmpeg", "-y",
+                "-err_detect", "ignore_err",
+                "-i", in_path,
+                "-vn", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000",
+                wav_path
+            ]
+            res = subprocess.run(conv_cmd, capture_output=True, text=True, timeout=120)
+            if res.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 2000:
+                with open(wav_path, "rb") as f:
+                    wav_bytes = f.read()
+                chunks = _slice_pcm_wav_bytes(wav_bytes, chunk_duration_sec, overlap_sec)
+                if chunks and len(chunks) > 0:
+                    print(f"[Universal Slicer OK] Converted via trial_ext={trial_ext} ({len(audio_data)} bytes) -> {len(chunks)} clean WAV chunk(s).")
+                    return chunks
+    except Exception as fe:
+        print(f"[Universal Slicer Error] {fe}")
+    finally:
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    # 3. Fallback to native WAV slicing if RIFF
+    if audio_data.startswith(b"RIFF"):
+        chunks = _slice_pcm_wav_bytes(audio_data, chunk_duration_sec, overlap_sec)
+        if chunks:
+            return chunks
+
+    return [audio_data]
 
 
 def _dedup_boundary_plates(chunks_plates_list: list) -> list:
