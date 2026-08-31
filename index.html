@@ -3034,7 +3034,10 @@ async function loadPersistedCheckFiles(){
     checkLargeFile = file;
     document.getElementById('largeFname').textContent = '\u{1F4CE} '+m.name;
     document.getElementById('removeLargeBtn').classList.add('show');
-    detectColForSide('large');
+    (async function(){
+      await detectColForSide('large');
+      await checkLiveRefUploadCurrentFile();
+    })();
   }catch(e){}
 }
 
@@ -5055,6 +5058,10 @@ async function checkLiveToggleMic(){
     checkLiveListeningIntent=false;
     showCheckStatus('err','لم يتم الاتصال بالخادم');
     return;
+  }
+  if(checkLargeFile && (!checkLargeRefMap || checkLargeRefMap.size === 0)){
+    showCheckStatus('proc','جارٍ تجهيز وتحميل اللوحات المرجعية للتشيك …', true);
+    await checkLiveRefUploadCurrentFile();
   }
   if(!checkLargeFile){
     showCheckStatus('warn','يرجى رفع ملف Excel للمطابقة أولاً');
