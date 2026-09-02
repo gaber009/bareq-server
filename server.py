@@ -862,6 +862,29 @@ def strip_vehicle_prefix(s: str) -> str:
     return s
 
 
+def _convert_spoken_arabic_numbers(text: str) -> str:
+    s = text
+    s = s.replace('ثلاث اصفار', '000').replace('ثلاث أصفار', '000').replace('صفرين', '00')
+    tens_map = {
+        'عشرة': '10', 'عشرين': '20', 'ثلاثين': '30', 'تلاتين': '30',
+        'أربعين': '40', 'اربعين': '40', 'خمسين': '50', 'ستين': '60',
+        'سبعين': '70', 'ثمانين': '80', 'تمانين': '80', 'تسعين': '90'
+    }
+    unit_map = {
+        'صفر': '0', 'واحد': '1', 'اثنين': '2', 'ثنين': '2', 'ثلاثة': '3', 'تلاتة': '3',
+        'أربعة': '4', 'اربعة': '4', 'خمسة': '5', 'ستة': '6', 'سبعة': '7', 'ثمانية': '8',
+        'تمانية': '8', 'تسعة': '9'
+    }
+    for u_word, u_val in unit_map.items():
+        for t_word, t_val in tens_map.items():
+            pattern = rf'{u_word}\s+(?:و|و\s+){t_word}'
+            s = re.sub(pattern, str(int(t_val) + int(u_val)), s)
+    for t_word, t_val in tens_map.items():
+        s = re.sub(rf'(?<!\w){t_word}(?!\w)', t_val, s)
+    for u_word, u_val in unit_map.items():
+        s = re.sub(rf'(?<!\w){u_word}(?!\w)', u_val, s)
+    return s
+
 def clean_saudi_plate(raw_plate: str) -> str:
     """
     Clean, normalize, and validate a Saudi vehicle license plate.
@@ -875,6 +898,9 @@ def clean_saudi_plate(raw_plate: str) -> str:
     # 1. Convert Arabic-Indic digits to standard 0-9
     indic_to_eng = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
     s = s.translate(indic_to_eng)
+    
+    # 1.1 Convert any spoken Arabic number words (e.g. ستين -> 60, صفر صفر صفر واحد -> 0001)
+    s = _convert_spoken_arabic_numbers(s)
     
     # 2. Extract digits
     digits_matches = re.findall(r'\d+', s)
@@ -909,14 +935,10 @@ def clean_saudi_plate(raw_plate: str) -> str:
             raw_chars.append(c)
         i += 1
         
-    # If fewer than 3 characters, reject
-    if len(raw_chars) < 3:
+    # If fewer than 2 characters, reject
+    if len(raw_chars) < 2:
         return None
-    
-    # Take the 3 plate characters
-    l1, l2, l3 = raw_chars[:3]
-    
-    # Normalize individual characters
+
     def norm_char(c):
         if c in ('ا', 'إ', 'آ', 'ٱ'): return 'أ'
         if c in ('ى', 'ي', 'ئ'): return 'ي'
@@ -934,16 +956,16 @@ def clean_saudi_plate(raw_plate: str) -> str:
         if c == 'ذ': return 'د'
         return c
 
-    l1 = norm_char(l1)
-    l2 = norm_char(l2)
-    l3 = norm_char(l3)
-    
-    # Check if the 3 letters form a non-plate word (e.g. ر ق م -> رقم)
-    combined = (l1 + l2 + l3).replace('هـ', 'ه').replace('أ', 'ا')
-    if combined in ('رقم', 'حسب', 'دون', 'سجل', 'متر', 'كيلو'):
+    # Take 2 or 3 plate characters
+    norm_chars = [norm_char(c) for c in raw_chars[:3]]
+
+    # Check if the letters form a non-plate word (e.g. ر ق م -> رقم)
+    combined = "".join(norm_chars).replace('هـ', 'ه').replace('أ', 'ا')
+    if combined in ('رقم', 'حسب', 'دون', 'سجل', 'متر', 'كيلو', 'لوحة', 'لوحه'):
         return None
-        
-    return f"{l1} {l2} {l3} {digits}"
+
+    letters_str = " ".join(norm_chars)
+    return f"{letters_str} {digits}"
 
 def _detect_audio_info(data: bytes) -> tuple[str, str]:
     """Detect actual audio MIME type and extension from binary headers"""
@@ -1231,7 +1253,7 @@ def _call_groq_whisper(cfg: dict, audio_data: bytes) -> list:
 
 def _process_single_chunk(chunk_data: tuple) -> list:
     """Worker to process a single audio chunk with Gemini Audio -> Groq Whisper -> Gemini Text fallback"""
-    c_idx, total_chunks, chunk, cfg, prompt, kind = chunk_data
+    c_idx, total_chunks, chunk, cfg, prompt, kind, model_name = chunk_data
     chunk_plates = []
     
     # 1. Try Gemini Multimodal Audio first
@@ -1251,7 +1273,8 @@ def _process_single_chunk(chunk_data: tuple) -> list:
                 "max_output_tokens": 8192
             }
         }
-        res_json = _call_gemini_with_rotation(cfg, payload, "gemini-flash-lite-latest", kind=kind)
+        active_model = model_name or cfg.get("gemini_model", "gemini-3.6-flash")
+        res_json = _call_gemini_with_rotation(cfg, payload, active_model, kind=kind)
         raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
         if raw_text.startswith("```json"): raw_text = raw_text[7:]
         if raw_text.startswith("```"): raw_text = raw_text[3:]
@@ -1289,7 +1312,7 @@ def _process_single_chunk(chunk_data: tuple) -> list:
     return chunk_plates
 
 def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind: str = "rest") -> list:
-    """High-accuracy sequential/parallel transcription with universal chunking for long audio (1000+ plates) and strict 17 Saudi letters enforcement"""
+    """High-accuracy sequential/parallel transcription with universal chunking for long audio (1000+ plates) and strict Saudi letters enforcement"""
     if not audio_data:
         return []
         
@@ -1300,27 +1323,34 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
     prompt = """أنت نظام ذكاء اصطناعي فائق الدقة متخصص حصرياً في تفريغ واستخراج أرقام وبيانات لوحات السيارات من الصوت بدقة 100% وبدون أي اختراع أو تخمين.
 المطلوب بدقة متناهية:
 1. استمع للتسجيل الصوتي واكتب كل لوحة نطقها المتحدث بدون استثناء وبالترتيب الزمني الدقيق.
-2. ⚠️ دقة الحروف الصوتية بنسبة 100% (أ، ب، ج، ح، د، ر، س، ص، ط، ع، ق، ك، ل، م، ن، هـ، و، ي):
-   - ⚠️ التمييز التام بين حرف الجيم وحرف الحاء:
-     * إذا قال المتحدث 'جيم' أو 'ج' اكتب حرف (ج) فوراً وممنوع منعاً باتاً تحويله إلى حاء! (مثال: 'ألف باء جيم واحد اثنين ثلاثة أربعة' = 'أ ب ج 1234').
-     * إذا قال المتحدث 'حاء' أو 'ح' اكتب حرف (ح).
-   - ⚠️ التمييز التام بين الكاف (ك) والقاف (ق):
-     * 'كاف' يكتب (ك)، 'قاف' يكتب (ق).
-   - صيغة اللوحة: 3 حروف متباعدة + 1 إلى 4 أرقام (مثال: 'أ ب ج 1234' أو 'ك د م 958' أو 'د ب أ 9075' أو 'أ ع ب 087').
-3. ⚠️ كلمات ليست لوحات: الكلمات مثل (رقم ، عين ، سين ، حسب ، دون ، فاصل ، لوحة) هي كلمات وصفية ولا تُعتبر لوحة.
-4. الأرقام: اكتب الأرقام بدقة كاملة كما نُطقت سواء كانت مفردة أو مركبة (مثال: 'تسعمائة وثمانية وخمسين' = 958، 'ألف ومائتين وأربعة وثلاثين' = 1234، 'صفر سبعة وثمانين' = 087، 'واحد اثنين ثلاثة أربعة' = 1234).
+2. ⚠️ دقة الحروف الصوتية بنسبة 100%:
+   - اكتب الحروف بدقة كما نطقها المتحدث دون زيادة أو نقصان (سواء نطق حرفين أو ثلاثة حروف).
+   - إذا نطق حرفين فقط (مثل: 'ل أ 0001') اكتب الحرفين فقط: 'ل أ 0001' وممنوع منعاً باتاً إضافة أو اختراع حرف ثالث من رأسك أبداً!
+   - ⚠️ التمييز التام بين حرف الجيم (ج) وحرف الحاء (ح):
+     * إذا قال 'جيم' أو 'ج' اكتب حرف (ج) فوراً وممنوع منعاً باتاً تحويله إلى حاء! (مثال: 'ألف باء جيم 1234' = 'أ ب ج 1234').
+     * إذا قال 'حاء' أو 'ح' اكتب حرف (ح).
+   - ⚠️ التمييز التام بين الكاف (ك) والقاف (ق): 'كاف' يكتب (ك)، 'قاف' يكتب (ق).
+3. ⚠️ دقة الأرقام والأصفار المتتالية (مهم جداً):
+   - اكتب الأرقام كاملة كما نُطقت بدقة شديدة:
+     * إذا قال المتحدث أصفاراً في بداية الرقم (مثل: 'ثلاث أصفار واحد' أو 'صفر صفر صفر واحد' أو '0001') اكتبها فوراً: 0001 مع الحفاظ على جميع الأصفار ولا تحذفها أبداً.
+     * إذا قال 'صفرين ثلاثة' = 003 ، إذا قال 'صفر سبعة وثمانين' = 087.
+     * دقق في الأرقام: 'ستين' تُكتب 60 (دقق بين ستين 60 وستة وأربعين 46 — 'ستين' هي 60 دائماً!).
+4. ⚠️ قواعد التصحيح الصوتي وتعديل الأرقام (Voice Corrections):
+   - إذا صحح المتحدث رقماً أو لوحة (مثل: 'وفي الآخر 1' ، 'أقصد 1' ، 'لا 1' ، 'تعديل' ، 'قصدي' ، 'معليش'):
+     * نفّذ التعديل فوراً على الجزء الخاطئ!
+     * مثال: إذا قال 'ل أ 0003 وفي الآخر 1' ⬅️ فهذا يعني تعديل الرقم الأخير من 3 إلى 1، فتُصبح اللوحة: 'ل أ 0001' (ممنوع منعاً باتاً دمج الأرقام لتصبح 301!).
 5. نوع السيارة والشارع والملاحظات:
    - إذا ذكر المتحدث نوع السيارة (مثل: باص، هايلوكس، كامري، يارس، نقل...) اكتبه في vehicle_type.
    - ⚠️ إذا لم يذكر نوع السيارة، اتركه فارغاً "" (لا تكتب تويوتا من رأسك أبداً).
    - إذا قال شارع كذا أو طريق كذا → اكتب في street_name.
    - إذا قال حي كذا → اكتب في district_name.
    - إذا قال ملاحظات (سليمة، مصدومة...) → اكتب في notes.
-6. تصحيح النطق: إذا قال 'تعديل' أو 'قصدي' أو 'لا' أو 'معليش' بعد لوحة، استبدل اللوحة السابقة باللوحة المصححة.
+6. كلمات ليست لوحات: الكلمات مثل (رقم ، عين ، سين ، حسب ، دون ، فاصل ، لوحة) هي كلمات وصفية ولا تُعتبر لوحة.
 7. مصفوفة JSON فقط بالشكل التالي:
 [{"plate": "أ ب ج 1234", "found": true, "vehicle_type": "", "street_name": "", "district_name": "", "notes": "", "street_location": ""}]
 إذا كان التسجيل صامتاً أو لم يذكر أي لوحة، أرجع: []"""
     
-    tasks = [(i, len(chunks), c, cfg, prompt, kind) for i, c in enumerate(chunks)]
+    tasks = [(i, len(chunks), c, cfg, prompt, kind, model_name) for i, c in enumerate(chunks)]
     
     # Process with 2 workers and pacing to respect Gemini rate limits
     from concurrent.futures import ThreadPoolExecutor
