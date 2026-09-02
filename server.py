@@ -92,21 +92,22 @@ def _unxor55(h: str) -> str:
 
 _FB_GEMINI_1 = _unxor55("76661976550f6579017e0441615b5602047305596f5e7e715f557a55556876465b53417b046162737642675a647d40654d704e5e76")
 _FB_GEMINI_2 = _unxor55("76661976550f6579017c565b7d1a786d5970077c666545017d726e7c7203055b5073555f0f7d01556d425179026d4061591a5b7e66")
+_FB_GEMINI_3 = _unxor55("76661976550f6579017e5371007672636f0379005263425260426e027b4f061a0e056f0166427f0f51060005010455647844450e50")
 _FB_GROQ = _unxor55("50445c686343044f50545c720662014672737c795551737c6070534e5504716e606059587347760e7d75645444045478665f407358466e5e")
 _FB_DEEPGRAM = _unxor55("060500000f0202520e00510255510351545501555606535151040f0607550e52530f555156060e55")
 _FB_OPENAI = _unxor55("445c1a4745585d1a795c0e06707a54725602067d530e00790f58016802456f5f06604440504163741a62650355626f7456764d475c555e5055035c427953766754684e7e7a790f4d01010203795c6e5979566304755b555c717d7178006758404e07626f4d05526d74425c02416341687e5879687d5068045e065d011a0e024f6447767c027645501a7d666840404d40734179676e474e5a7871684260677c537d557e76")
 
 default_config = {
-    "gemini_api_key": _FB_GEMINI_1,
-    "gemini_rest_keys": [_FB_GEMINI_1, _FB_GEMINI_2],
-    "gemini_live_keys": [_FB_GEMINI_1, _FB_GEMINI_2],
+    "gemini_api_key": _FB_GEMINI_3,
+    "gemini_rest_keys": [_FB_GEMINI_3, _FB_GEMINI_1, _FB_GEMINI_2],
+    "gemini_live_keys": [_FB_GEMINI_3, _FB_GEMINI_1, _FB_GEMINI_2],
     "groq_api_key": _FB_GROQ,
     "groq_keys": [_FB_GROQ],
     "deepgram_api_key": _FB_DEEPGRAM,
     "openai_api_key": _FB_OPENAI,
     "gmaps_api_key": "AIzaSyD6MFjNe3_C0AZygsdKj3loxzw77IxTssQ",
     "ors_api_key": "",
-    "gemini_model": "gemini-flash-lite-latest",
+    "gemini_model": "gemini-3.6-flash",
     "app_name": "برق - License Plate Extractor",
     "admin_username": "admin",
     "admin_password": "123"
@@ -124,9 +125,15 @@ def load_config():
 
     # Ensure keys are populated
     if not cfg.get("gemini_api_key"):
-        cfg["gemini_api_key"] = _FB_GEMINI_1
+        cfg["gemini_api_key"] = _FB_GEMINI_3
     if not cfg.get("gemini_rest_keys"):
-        cfg["gemini_rest_keys"] = [_FB_GEMINI_1, _FB_GEMINI_2]
+        cfg["gemini_rest_keys"] = [_FB_GEMINI_3, _FB_GEMINI_1, _FB_GEMINI_2]
+    elif _FB_GEMINI_3 not in cfg["gemini_rest_keys"]:
+        cfg["gemini_rest_keys"].insert(0, _FB_GEMINI_3)
+    if not cfg.get("gemini_live_keys"):
+        cfg["gemini_live_keys"] = [_FB_GEMINI_3, _FB_GEMINI_1, _FB_GEMINI_2]
+    elif _FB_GEMINI_3 not in cfg["gemini_live_keys"]:
+        cfg["gemini_live_keys"].insert(0, _FB_GEMINI_3)
     if not cfg.get("groq_api_key"):
         cfg["groq_api_key"] = _FB_GROQ
     if not cfg.get("groq_keys"):
