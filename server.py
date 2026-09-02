@@ -123,16 +123,19 @@ def load_config():
         except Exception:
             pass
 
-    # Ensure keys are populated
-    if not cfg.get("gemini_api_key"):
-        cfg["gemini_api_key"] = _FB_GEMINI_3
+    # Ensure keys are populated and new key is active primary
+    cfg["gemini_api_key"] = _FB_GEMINI_3
     if not cfg.get("gemini_rest_keys"):
         cfg["gemini_rest_keys"] = [_FB_GEMINI_3, _FB_GEMINI_1, _FB_GEMINI_2]
-    elif _FB_GEMINI_3 not in cfg["gemini_rest_keys"]:
+    else:
+        if _FB_GEMINI_3 in cfg["gemini_rest_keys"]:
+            cfg["gemini_rest_keys"].remove(_FB_GEMINI_3)
         cfg["gemini_rest_keys"].insert(0, _FB_GEMINI_3)
     if not cfg.get("gemini_live_keys"):
         cfg["gemini_live_keys"] = [_FB_GEMINI_3, _FB_GEMINI_1, _FB_GEMINI_2]
-    elif _FB_GEMINI_3 not in cfg["gemini_live_keys"]:
+    else:
+        if _FB_GEMINI_3 in cfg["gemini_live_keys"]:
+            cfg["gemini_live_keys"].remove(_FB_GEMINI_3)
         cfg["gemini_live_keys"].insert(0, _FB_GEMINI_3)
     if not cfg.get("groq_api_key"):
         cfg["groq_api_key"] = _FB_GROQ
