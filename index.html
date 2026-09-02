@@ -5069,7 +5069,11 @@ async function checkLiveToggleMic(){
 
   try{
     const stream=await navigator.mediaDevices.getUserMedia({
-      audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:{ideal:1},sampleRate:{ideal:16000}}
+      audio:{
+        echoCancellation:true,
+        noiseSuppression:true,
+        autoGainControl:true
+      }
     });
     checkLiveMediaStream=stream;
     const ctx=new (window.AudioContext||window.webkitAudioContext)();
@@ -5264,7 +5268,7 @@ async function checkLiveToggleMic(){
     };
 
     const mute=ctx.createGain();
-    mute.gain.value=0;
+    mute.gain.value=0.00001; // Avoid strict zero to prevent Chrome power-saving suspension
     src.connect(node);
     node.connect(mute);
     mute.connect(ctx.destination);
