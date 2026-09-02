@@ -4567,11 +4567,10 @@ function smartMatchCheckPlate(spokenPlate){
     return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: false};
   }
   
-  // 2. Smart Phonetic & Dropout Matching
   const PHONETIC_MAP = {'ص':'س', 'ض':'س', 'ظ':'ط', 'غ':'ع', 'ق':'ط', 'هـ':'ه', 'ة':'ه', 'أ':'ا', 'إ':'ا', 'آ':'ا', 'ى':'ي'};
   function skel(s){
     let r='';
-    for(const ch of s){ r += PHONETIC_MAP[ch] || ch; }
+    for(let i=0; i<s.length; i++){ r += PHONETIC_MAP[s[i]] || s[i]; }
     return r;
   }
   
@@ -4584,23 +4583,48 @@ function smartMatchCheckPlate(spokenPlate){
     const rfLetters = refKey.replace(/\d+/g,'');
     const rfSkelLetters = skel(rfLetters);
     
-    // Rule A: Exact digits + Phonetic Letters match (e.g. حصص5118 -> حسص5118, حنط2385 -> حنق2385, ققق1072 -> حقق1072)
-    if(spDigits && spDigits === rfDigits && (spSkelLetters === rfSkelLetters || (spLetters.length===3 && rfLetters.length===3 && (spLetters[0]===rfLetters[0] || spLetters[2]===rfLetters[2])))){
-      return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
-    }
-    
-    // Rule B: Exact letters + Digit Transposition / 1-digit swap (e.g. دحك3624 -> دحك6324, حمو8247 -> حمو8147)
-    if(spLetters && spLetters === rfLetters && spDigits.length === rfDigits.length){
-      const spSorted = spDigits.split('').sort().join('');
-      const rfSorted = rfDigits.split('').sort().join('');
-      if(spSorted === rfSorted){
+    // Rule A: Exact digits (>=3 digits) + Letter Subset / 1-letter diff / Phonetic
+    if(spDigits && spDigits === rfDigits && spDigits.length >= 3){
+      // A1: Substring/subset match (e.g. بح in بحط, حس in سحس, صص in أصص)
+      if(rfLetters.includes(spLetters) || spLetters.includes(rfLetters)){
+        return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+      }
+      // A2: 2 out of 3 letters match in common or position (e.g. دلح vs ددح, بلس vs بأس)
+      let matchCount = 0;
+      for(let i=0; i<spLetters.length; i++){
+        if(rfLetters.includes(spLetters[i])) matchCount++;
+      }
+      if(matchCount >= Math.min(spLetters.length, rfLetters.length) - 1 && matchCount >= 2){
+        return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+      }
+      // A3: Phonetic skeleton match
+      if(spSkelLetters === rfSkelLetters){
         return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
       }
     }
     
-    // Rule C: Exact letters + 1 Dropped Digit at end (e.g. دبو662 -> دبو6626, انس431 -> انس4318)
-    if(spLetters && spLetters === rfLetters && spDigits.length >= 2 && rfDigits.length === 4 && rfDigits.startsWith(spDigits)){
-      return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+    // Rule B: Exact letters + Digit Transposition / 1-digit diff / dropped digit
+    if(spLetters && spLetters === rfLetters){
+      // B1: Transposition (e.g. 2734 vs 7243)
+      if(spDigits.length === rfDigits.length){
+        const spSorted = spDigits.split('').sort().join('');
+        const rfSorted = rfDigits.split('').sort().join('');
+        if(spSorted === rfSorted){
+          return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+        }
+        // B2: 1-digit mismatch (e.g. 9400 vs 9404)
+        let diffs = 0;
+        for(let i=0; i<spDigits.length; i++){
+          if(spDigits[i] !== rfDigits[i]) diffs++;
+        }
+        if(diffs <= 1){
+          return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+        }
+      }
+      // B3: Dropped last digit (e.g. دبو662 -> دبو6626)
+      if(spDigits.length >= 2 && rfDigits.length === 4 && rfDigits.startsWith(spDigits)){
+        return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+      }
     }
   }
   
