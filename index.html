@@ -26,7 +26,6 @@ function _toLeafletLatLng(c) {
     return [lat, lng];
 }
 window.initLeafletMapsPolyfill = function() {
-    if (window.google && window.google.maps && window.google.maps._isLeafletPolyfill) return;
     window.google = window.google || {};
     window.google.maps = {
         _isLeafletPolyfill: true,
@@ -34,10 +33,16 @@ window.initLeafletMapsPolyfill = function() {
             var center = opts && opts.center ? _toLeafletLatLng(opts.center) : [24.7136, 46.6753];
             var zoom = opts && opts.zoom ? opts.zoom : 11;
             var lmap = L.map(el).setView(center, zoom);
-            L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            var streetLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
                 maxZoom: 19,
                 attribution: '© OpenStreetMap'
-            }).addTo(lmap);
+            });
+            var satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                maxZoom: 19,
+                attribution: '© Esri Satellite'
+            });
+            streetLayer.addTo(lmap);
+            L.control.layers({ '🗺️ خريطة الشوارع': streetLayer, '🛰️ قمر صناعي (Satellite)': satLayer }).addTo(lmap);
             this.lmap = lmap;
             this.setCenter = function(c) { var ll = _toLeafletLatLng(c); if (ll) lmap.panTo(ll); };
             this.panTo = function(c) { var ll = _toLeafletLatLng(c); if (ll) lmap.panTo(ll); };
@@ -49,6 +54,8 @@ window.initLeafletMapsPolyfill = function() {
                         cb({ latLng: { lat: function() { return e.latlng.lat; }, lng: function() { return e.latlng.lng; } }});
                     });
                 }
+                if (evt === 'zoom_changed') lmap.on('zoomend', cb);
+                if (evt === 'dragstart') lmap.on('dragstart', cb);
             };
             this.fitBounds = function(b) { if (b && b._bounds && b._bounds.length > 0) lmap.fitBounds(b._bounds); };
         },
@@ -73,9 +80,14 @@ window.initLeafletMapsPolyfill = function() {
         InfoWindow: function(opts) {
             var content = opts && opts.content ? opts.content : '';
             this.popup = L.popup().setContent(content);
-            this.open = function(map, marker) {
-                if (marker && marker.lmarker) marker.lmarker.bindPopup(this.popup).openPopup();
-                else if (map && map.lmap) this.popup.openOn(map.lmap);
+            this.open = function(a, b) {
+                var targetMarker = null;
+                var targetMap = null;
+                if(a && a.anchor) { targetMarker = a.anchor; targetMap = a.map; }
+                else if(b) { targetMap = a; targetMarker = b; }
+                else { targetMap = a; }
+                if (targetMarker && targetMarker.lmarker) targetMarker.lmarker.bindPopup(this.popup).openPopup();
+                else if (targetMap && targetMap.lmap) this.popup.openOn(targetMap.lmap);
             };
             this.setContent = function(c) { this.popup.setContent(c); };
             this.close = function() { this.popup.remove(); };
@@ -3226,7 +3238,24 @@ async function initGmapsPage(){
 }
 let _gmapsApiLoadingPromise = null;
 
+window.gm_authFailure = function() {
+  console.warn('[Google Maps] ProjectDeniedMapError detected: Google Cloud project for this key is disabled.');
+  window._gmapsAuthFailed = true;
+  if(window.initLeafletMapsPolyfill) window.initLeafletMapsPolyfill();
+  const el = document.getElementById('gmMap');
+  if(el){
+    el.innerHTML = '';
+    gmMap = null;
+    ensureMapInstance();
+  }
+  showGmStatus('warn', '⚠️ مفتاح Google Maps الحالي يحتاج تفعيل في Google Cloud (ProjectDeniedMapError). تم تشغيل الخريطة البديلة بالأقمار الصناعية فوراً لعرض نقاطك بنجاح.');
+};
+
 async function ensureGoogleMapsApi(){
+  if(window._gmapsAuthFailed){
+    if(window.initLeafletMapsPolyfill) window.initLeafletMapsPolyfill();
+    return;
+  }
   // 1. If real Google Maps SDK is already loaded and ready:
   if(window.google && window.google.maps && window.google.maps.Map && !window.google.maps._isLeafletPolyfill){
     return;
