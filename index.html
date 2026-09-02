@@ -4620,8 +4620,21 @@ function smartMatchCheckPlate(spokenPlate){
         if(diffs <= 1){
           return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
         }
+        // B3: Common digits (e.g. 7871 vs 9178 shares 3 digits: 7, 8, 1)
+        let bArr = rfDigits.split('');
+        let commonCount = 0;
+        for(let i=0; i<spDigits.length; i++){
+          const idx = bArr.indexOf(spDigits[i]);
+          if(idx !== -1){
+            commonCount++;
+            bArr.splice(idx, 1);
+          }
+        }
+        if(commonCount >= 3){
+          return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
+        }
       }
-      // B3: Dropped last digit (e.g. دبو662 -> دبو6626)
+      // B4: Dropped last digit (e.g. دبو662 -> دبو6626)
       if(spDigits.length >= 2 && rfDigits.length === 4 && rfDigits.startsWith(spDigits)){
         return {found: true, plate: item.plate||spokenPlate, vehicle_type: item.vehicle_type||'', notes: item.notes||'', isFuzzy: true};
       }
