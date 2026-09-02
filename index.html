@@ -3056,7 +3056,14 @@ function switchPage(p){
     if(btn) btn.classList.toggle('active', p === n);
     if(dockBtn) dockBtn.classList.toggle('active', p === n);
   });
-  if(p==='gmaps') initGmapsPage();
+  if(p==='gmaps') {
+    initGmapsPage();
+    setTimeout(()=>{
+      if(gmMap && window.google && window.google.maps) {
+        google.maps.event.trigger(gmMap, 'resize');
+      }
+    }, 200);
+  }
   else stopGmapsUserLocationTracking();
   if(p==='field' && typeof omFetchCheckCapabilities==='function') omFetchCheckCapabilities();
   if(p==='field' && typeof omRenderStoredImportsList==='function') omRenderStoredImportsList();
@@ -3217,10 +3224,65 @@ async function initGmapsPage(){
     showGmStatus('warn','تعذّر تحميل الخرائط — تأكد من تسجيل الدخول ومفتاح Maps في الأدمن.');
   }
 }
+let _gmapsApiLoadingPromise = null;
+
 async function ensureGoogleMapsApi(){
-  if(window.initLeafletMapsPolyfill) window.initLeafletMapsPolyfill();
-  return;
+  // 1. If real Google Maps SDK is already loaded and ready:
+  if(window.google && window.google.maps && window.google.maps.Map && !window.google.maps._isLeafletPolyfill){
+    return;
+  }
+  if(_gmapsApiLoadingPromise) return _gmapsApiLoadingPromise;
+
+  _gmapsApiLoadingPromise = new Promise(async (resolve) => {
+    let key = "AIzaSyD6MFjNe3_C0AZygsdKj3loxzw77IxTssQ";
+    try{
+      const r = await fetch('/api/config/maps-js-key');
+      const d = await r.json();
+      if(d && d.key) key = d.key;
+    }catch(e){}
+
+    const scriptId = 'google-maps-real-sdk';
+    if(document.getElementById(scriptId)){
+      let checks = 0;
+      const interval = setInterval(()=>{
+        checks++;
+        if(window.google && window.google.maps && window.google.maps.Map && !window.google.maps._isLeafletPolyfill){
+          clearInterval(interval);
+          resolve();
+        } else if(checks > 30){
+          clearInterval(interval);
+          if(window.initLeafletMapsPolyfill) window.initLeafletMapsPolyfill();
+          resolve();
+        }
+      }, 100);
+      return;
+    }
+
+    // Clean any prior polyfill so real Google Maps can initialize cleanly
+    if(window.google && window.google.maps && window.google.maps._isLeafletPolyfill){
+      try { delete window.google.maps; } catch(e) { window.google.maps = undefined; }
+    }
+
+    const script = document.createElement('script');
+    script.id = scriptId;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places,geometry`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      console.log('[Google Maps] Real Google Maps SDK loaded successfully.');
+      resolve();
+    };
+    script.onerror = (err) => {
+      console.warn('[Google Maps] Failed to load Google Maps SDK, falling back to Leaflet polyfill:', err);
+      if(window.initLeafletMapsPolyfill) window.initLeafletMapsPolyfill();
+      resolve();
+    };
+    document.head.appendChild(script);
+  });
+
+  return _gmapsApiLoadingPromise;
 }
+
 function ensureMapInstance(center){
   const el=document.getElementById('gmMap');
   if(!el)return null;
@@ -3228,8 +3290,11 @@ function ensureMapInstance(center){
     gmMap=new google.maps.Map(el,{
       center:center||{lat:24.7136,lng:46.6753},
       zoom:11,
+      mapTypeId:'roadmap',
       mapTypeControl:true,
-      streetViewControl:false
+      streetViewControl:true,
+      fullscreenControl:true,
+      zoomControl:true
     });
     // Don't lock zoom: once the user zooms/drags, keep it flexible.
     gmMap.addListener('zoom_changed',()=>{ gmHasUserZoomed=true; });
@@ -3298,13 +3363,22 @@ async function loadGpsPointsToMap(){
         title:'#'+(idx+1)+' '+p.lat+','+p.lng
       });
       bounds.extend({lat:p.lat,lng:p.lng});
-      if(selectedCols.length){
+      if(selectedCols.length || Object.keys(p.fields||{}).length){
         marker.addListener('click',()=>{
           const fields=p.fields||{};
-          const rows=selectedCols.map(c=>{
-            return '<div><strong>'+escHtml(c)+':</strong> '+escHtml(fields[c]||'')+'</div>';
-          }).join('');
-          infoWin.setContent('<div style="font-family:Arial;font-size:13px;line-height:1.6">'+rows+'</div>');
+          let rows='';
+          if(selectedCols.length){
+            rows=selectedCols.map(c=>{
+              return '<div><strong>'+escHtml(c)+':</strong> '+escHtml(fields[c]||'')+'</div>';
+            }).join('');
+          }else{
+            rows=Object.keys(fields).filter(k=>fields[k] && !/gps|lat|lng/i.test(k)).slice(0,5).map(c=>{
+              return '<div><strong>'+escHtml(c)+':</strong> '+escHtml(fields[c]||'')+'</div>';
+            }).join('');
+          }
+          const navUrl=`https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
+          const navBtn=`<div style="margin-top:8px;text-align:center"><a href="${navUrl}" target="_blank" style="display:inline-block;background:#0d9488;color:#fff;padding:5px 12px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:bold">&#x1F697; فتح المسار في Google Maps</a></div>`;
+          infoWin.setContent('<div style="font-family:Cairo,Arial;font-size:13px;line-height:1.7;min-width:180px;direction:rtl;text-align:right">'+rows+navBtn+'</div>');
           infoWin.open({anchor:marker,map:map});
         });
       }

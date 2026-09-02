@@ -1812,25 +1812,96 @@ async def check_live_upload_excel(request: Request):
         }
     }
 
+def _extract_lat_lng(val: any) -> tuple[float, float] | None:
+    """Robust extractor of lat/lng from string, number, or google maps url"""
+    if not val:
+        return None
+    s = str(val).strip()
+    s = s.replace('،', ',').replace(';', ',').replace('📍', '').replace(' ', ' ')
+    m = re.search(r'(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)', s)
+    if m:
+        try:
+            lat = float(m.group(1))
+            lng = float(m.group(2))
+            if -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0:
+                return lat, lng
+        except ValueError:
+            pass
+    return None
+
 @app.post("/api/parse-gps-excel")
 async def parse_gps_excel(request: Request):
     headers = []
     rows = []
+    points = []
     try:
         form = await request.form()
         file = form.get("file") or form.get("large_file") or form.get("small_file") or form.get("large") or form.get("small")
         pw = form.get("password") or form.get("largePw") or form.get("smallPw") or ""
+        gps_col = str(form.get("gps_col") or "").strip()
+        label_cols_json = form.get("label_cols_json")
+        selected_cols = []
+        if label_cols_json:
+            try:
+                selected_cols = json.loads(label_cols_json)
+            except Exception:
+                pass
+
         if file:
             content = await file.read()
             headers, rows = _parse_any_excel_file(content, str(pw))
+
+            # Auto-detect GPS column if not explicitly given or not in headers
+            target_gps_col = gps_col
+            if not target_gps_col or (headers and target_gps_col not in headers):
+                for h in headers:
+                    if any(kw in h.upper() for kw in ["GPS", "موقع الشارع", "الموقع", "إحداثيات", "احداثيات", "COORDINATES", "LOCATION"]):
+                        target_gps_col = h
+                        break
+            if not target_gps_col and headers:
+                for h in headers:
+                    if "GPS" in h.upper():
+                        target_gps_col = h
+                        break
+
+            lat_col = next((h for h in headers if re.search(r'^(lat|latitude|خط العرض)$', h, re.IGNORECASE)), None)
+            lng_col = next((h for h in headers if re.search(r'^(lng|lon|longitude|خط الطول)$', h, re.IGNORECASE)), None)
+
+            for r in rows:
+                lat_lng = None
+                if target_gps_col and r.get(target_gps_col):
+                    lat_lng = _extract_lat_lng(r.get(target_gps_col))
+                if not lat_lng and lat_col and lng_col and r.get(lat_col) and r.get(lng_col):
+                    try:
+                        la = float(str(r.get(lat_col)).strip())
+                        lo = float(str(r.get(lng_col)).strip())
+                        if -90.0 <= la <= 90.0 and -180.0 <= lo <= 180.0:
+                            lat_lng = (la, lo)
+                    except Exception:
+                        pass
+                if not lat_lng:
+                    # Scan all values in row for coords pattern
+                    for col_name, val in r.items():
+                        lat_lng = _extract_lat_lng(val)
+                        if lat_lng:
+                            break
+
+                if lat_lng:
+                    points.append({
+                        "lat": lat_lng[0],
+                        "lng": lat_lng[1],
+                        "fields": r
+                    })
     except Exception as e:
-        print("Excel parsing exception:", e)
+        print("Excel parsing exception in parse_gps_excel:", e)
             
     return {
         "status": "ok",
         "headers": headers,
         "rows": rows,
-        "total_rows": len(rows)
+        "points": points,
+        "total_rows": len(rows),
+        "total_points": len(points)
     }
 
 def _norm_plate_str(s: str) -> str:
