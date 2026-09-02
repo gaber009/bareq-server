@@ -989,7 +989,7 @@ def _detect_audio_info(data: bytes) -> tuple[str, str]:
         return ("audio/flac", "flac")
     return ("audio/mp4", "mp4")
 
-def _slice_pcm_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
+def _slice_pcm_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 300.0, overlap_sec: float = 6.0) -> list[bytes]:
     """Slice raw PCM WAV into overlapping chunks using standard wave library."""
     import wave
     import io
@@ -1024,17 +1024,17 @@ def _slice_pcm_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 60.0, ove
                 chunks.append(out_io.getvalue())
                 
                 cur_pos += step_frames
-                if n_frames - cur_pos < int(4 * framerate):
+                if cur_pos >= n_frames:
                     break
             return chunks if chunks else [wav_bytes]
     except Exception:
         return [wav_bytes]
 
-def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
+def slice_wav_bytes(wav_bytes: bytes, chunk_duration_sec: float = 300.0, overlap_sec: float = 6.0) -> list[bytes]:
     return slice_any_audio(wav_bytes, chunk_duration_sec, overlap_sec)
 
 
-def slice_any_audio(audio_data: bytes, chunk_duration_sec: float = 60.0, overlap_sec: float = 2.0) -> list[bytes]:
+def slice_any_audio(audio_data: bytes, chunk_duration_sec: float = 300.0, overlap_sec: float = 6.0) -> list[bytes]:
     """
     Universal audio slicer: converts ANY audio/video format (.wav, .mp3, .m4a, .webm, .ogg, .mp4, .aac, .amr, etc.)
     into clean 16kHz Mono 16-bit PCM WAV chunks of ~60 seconds each.
@@ -1098,33 +1098,82 @@ def slice_any_audio(audio_data: bytes, chunk_duration_sec: float = 60.0, overlap
     return [audio_data]
 
 
+def smart_clean_and_dedup_plates(plates: list) -> list:
+    """
+    Deduplicates and cleans plate lists:
+    1. Removes identical consecutive duplicate plates (merging notes/vehicle_type).
+    2. Removes partial stumbles right before their complete plate (e.g. 'أ ق ر 9' before 'أ ق ر 9810').
+    3. Merges incomplete prefixes when full plate with same letters follows immediately.
+    """
+    if not plates:
+        return []
+
+    cleaned = [p for p in plates if isinstance(p, dict) and p.get("plate", "").strip()]
+    if not cleaned:
+        return []
+
+    result = []
+    for p in cleaned:
+        if not result:
+            result.append(p)
+            continue
+
+        prev = result[-1]
+        prev_pl = prev.get("plate", "").strip()
+        curr_pl = p.get("plate", "").strip()
+
+        # 1. Exact match duplicate
+        if _norm_plate_str(prev_pl) == _norm_plate_str(curr_pl):
+            for k, v in p.items():
+                if v and not prev.get(k):
+                    prev[k] = v
+            continue
+
+        # 2. Check for partial stumble / prefix plate
+        # e.g. 'أ ق ر 9' followed immediately by 'أ ق ر 9810'
+        prev_parts = prev_pl.split()
+        curr_parts = curr_pl.split()
+        if len(prev_parts) >= 2 and len(curr_parts) >= 2:
+            prev_letters = " ".join(prev_parts[:-1])
+            prev_digits = prev_parts[-1]
+            curr_letters = " ".join(curr_parts[:-1])
+            curr_digits = curr_parts[-1]
+
+            # Same letters and prev_digits is prefix of curr_digits (e.g. 9 vs 9810, or 5 vs 58)
+            if prev_letters == curr_letters and curr_digits.startswith(prev_digits) and len(curr_digits) > len(prev_digits):
+                # Replace incomplete stumble with complete plate
+                for k, v in prev.items():
+                    if v and not p.get(k):
+                        p[k] = v
+                result[-1] = p
+                continue
+
+            # If prev plate had only 1 or 2 digits and curr has 3 or 4 digits with same letters
+            if prev_letters == curr_letters and len(prev_digits) <= 2 and len(curr_digits) >= 3:
+                for k, v in prev.items():
+                    if v and not p.get(k):
+                        p[k] = v
+                result[-1] = p
+                continue
+
+            # If identical digits but curr has more letters or corrected letters
+            if prev_digits == curr_digits and len(prev_letters.split()) < len(curr_letters.split()):
+                for k, v in prev.items():
+                    if v and not p.get(k):
+                        p[k] = v
+                result[-1] = p
+                continue
+
+        result.append(p)
+
+    return result
+
 def _dedup_boundary_plates(chunks_plates_list: list) -> list:
-    """
-    Merge plates across consecutive audio chunks.
-    Only deduplicates identical consecutive plates right at the boundary overlap,
-    ensuring ALL distinct plates spoken throughout a 19+ minute session (1000+ plates) are 100% preserved.
-    """
-    final_plates = []
-    for chunk_plates in chunks_plates_list:
-        for p_idx, p in enumerate(chunk_plates):
-            if not isinstance(p, dict):
-                continue
-            plate_text = p.get("plate", "").strip()
-            if not plate_text:
-                continue
-            
-            # If this is the first plate of a new chunk, check if it duplicates the last plate of the previous chunk
-            if final_plates and p_idx == 0:
-                last_plate = final_plates[-1].get("plate", "").strip()
-                if _norm_plate_str(plate_text) == _norm_plate_str(last_plate):
-                    # Merge attributes
-                    for k, v in p.items():
-                        if v and not final_plates[-1].get(k):
-                            final_plates[-1][k] = v
-                    continue
-            
-            final_plates.append(p)
-    return final_plates
+    flat = []
+    for cp in chunks_plates_list:
+        if isinstance(cp, list):
+            flat.extend(cp)
+    return smart_clean_and_dedup_plates(flat)
 
 _GEMINI_KEY_INDEX = 0
 
@@ -1316,37 +1365,46 @@ def _transcribe_dual_engine(cfg: dict, audio_data: bytes, model_name: str, kind:
     if not audio_data:
         return []
         
-    # Chunk long audio into ~60s segments (e.g. 13 min audio -> 13 clean chunks)
-    chunks = slice_any_audio(audio_data, chunk_duration_sec=60.0, overlap_sec=2.0)
+    # Chunk long audio into ~300s (5 min) segments to preserve full plate context and eliminate chops
+    chunks = slice_any_audio(audio_data, chunk_duration_sec=300.0, overlap_sec=6.0)
     print(f"[Audio Processing] Sliced audio into {len(chunks)} chunk(s) for deep analysis.")
     
     prompt = """أنت نظام ذكاء اصطناعي فائق الدقة متخصص حصرياً في تفريغ واستخراج أرقام وبيانات لوحات السيارات من الصوت بدقة 100% وبدون أي اختراع أو تخمين.
-المطلوب بدقة متناهية:
-1. استمع للتسجيل الصوتي واكتب كل لوحة نطقها المتحدث بدون استثناء وبالترتيب الزمني الدقيق.
-2. ⚠️ دقة الحروف الصوتية بنسبة 100%:
-   - اكتب الحروف بدقة كما نطقها المتحدث دون زيادة أو نقصان (سواء نطق حرفين أو ثلاثة حروف).
-   - إذا نطق حرفين فقط (مثل: 'ل أ 0001') اكتب الحرفين فقط: 'ل أ 0001' وممنوع منعاً باتاً إضافة أو اختراع حرف ثالث من رأسك أبداً!
+المطلوب منك بدقة متناهية:
+1. ⚠️ استخراج شامل وكامل لجميع اللوحات:
+   - استمع بدقة للتسجيل من أول ثانية لآخر ثانية واستخرج كل لوحة نطقها المتحدث بدون أي تفويت أو نقصان حتى لو كانت اللوحة سريعة أو مقتضبة.
+2. ⚠️ التلعثم واللوحات الناقصة (Incomplete Stumbles):
+   - إذا تلعثم المتحدث أو بدأ بنطق لوحة غير مكتملة ثم أعادها أو أكملها فوراً (مثال: 'أ ق ر 9... أ ق ر 9810 قديم'):
+     * اكتب فقط اللوحة المكتملة المصححة: 'أ ق ر 9810' مع الملاحظة 'قديم'.
+     * ممنوع منعاً باتاً كتابة اللوحة الناقصة 'أ ق ر 9' كعنصر منفصل!
+   - إذا قال 'أ د ي 5... أ د ي 58' اكتب فقط 'أ د ي 58'.
+3. ⚠️ دقة الحروف الصوتية بنسبة 100%:
+   - اكتب الحروف بدقة كما نطقها المتحدث دون زيادة أو نقصان (سواء نطق حرفين أو ثلاثة حروف):
+     * إذا نطق حرفين فقط (مثل: 'ل أ 0001') اكتب الحرفين فقط: 'ل أ 0001' وممنوع اختراع حرف ثالث من رأسك أبداً!
+   - ⚠️ التمييز التام بين النون (ن) والواو (و):
+     * إذا قال 'ر هـ ن' اكتب (ر هـ ن) بصوت النون، ولا تكتب (ر هـ و) أبداً! دقق في صوت النون في آخر اللوحة.
    - ⚠️ التمييز التام بين حرف الجيم (ج) وحرف الحاء (ح):
      * إذا قال 'جيم' أو 'ج' اكتب حرف (ج) فوراً وممنوع منعاً باتاً تحويله إلى حاء! (مثال: 'ألف باء جيم 1234' = 'أ ب ج 1234').
      * إذا قال 'حاء' أو 'ح' اكتب حرف (ح).
    - ⚠️ التمييز التام بين الكاف (ك) والقاف (ق): 'كاف' يكتب (ك)، 'قاف' يكتب (ق).
-3. ⚠️ دقة الأرقام والأصفار المتتالية (مهم جداً):
+4. ⚠️ دقة الأرقام والأصفار المتتالية (مهم جداً):
    - اكتب الأرقام كاملة كما نُطقت بدقة شديدة:
      * إذا قال المتحدث أصفاراً في بداية الرقم (مثل: 'ثلاث أصفار واحد' أو 'صفر صفر صفر واحد' أو '0001') اكتبها فوراً: 0001 مع الحفاظ على جميع الأصفار ولا تحذفها أبداً.
      * إذا قال 'صفرين ثلاثة' = 003 ، إذا قال 'صفر سبعة وثمانين' = 087.
      * دقق في الأرقام: 'ستين' تُكتب 60 (دقق بين ستين 60 وستة وأربعين 46 — 'ستين' هي 60 دائماً!).
-4. ⚠️ قواعد التصحيح الصوتي وتعديل الأرقام (Voice Corrections):
-   - إذا صحح المتحدث رقماً أو لوحة (مثل: 'وفي الآخر 1' ، 'أقصد 1' ، 'لا 1' ، 'تعديل' ، 'قصدي' ، 'معليش'):
-     * نفّذ التعديل فوراً على الجزء الخاطئ!
-     * مثال: إذا قال 'ل أ 0003 وفي الآخر 1' ⬅️ فهذا يعني تعديل الرقم الأخير من 3 إلى 1، فتُصبح اللوحة: 'ل أ 0001' (ممنوع منعاً باتاً دمج الأرقام لتصبح 301!).
-5. نوع السيارة والشارع والملاحظات:
+5. ⚠️ قواعد التصحيح الصوتي وتعديل الأرقام واللوحات (Voice Corrections):
+   - إذا صحح المتحدث رقماً أو حرفاً (مثل: 'وفي الآخر 1' ، 'أقصد 1' ، 'مش ر هـ و' ، 'تعديل' ، 'قصدي' ، 'معليش' ، 'لا'):
+     * نفّذ التعديل فوراً واكتب النسخة المصححة فقط!
+     * مثال: إذا قال 'ل أ 0003 وفي الآخر 1' ⬅️ تُصبح اللوحة: 'ل أ 0001' (ممنوع منعاً باتاً دمج الأرقام لتصبح 301!).
+     * مثال: إذا قال 'ر هـ و 52 ر هـ ن مش ر هـ و' ⬅️ تُكتب اللوحة: 'ر هـ ن 52' فقط وتُحذف 'ر هـ و 52' تماماً.
+6. نوع السيارة والشارع والملاحظات:
    - إذا ذكر المتحدث نوع السيارة (مثل: باص، هايلوكس، كامري، يارس، نقل...) اكتبه في vehicle_type.
    - ⚠️ إذا لم يذكر نوع السيارة، اتركه فارغاً "" (لا تكتب تويوتا من رأسك أبداً).
    - إذا قال شارع كذا أو طريق كذا → اكتب في street_name.
    - إذا قال حي كذا → اكتب في district_name.
-   - إذا قال ملاحظات (سليمة، مصدومة...) → اكتب في notes.
-6. كلمات ليست لوحات: الكلمات مثل (رقم ، عين ، سين ، حسب ، دون ، فاصل ، لوحة) هي كلمات وصفية ولا تُعتبر لوحة.
-7. مصفوفة JSON فقط بالشكل التالي:
+   - إذا قال ملاحظات (سليمة، مصدومة، قديم...) → اكتب في notes.
+7. كلمات ليست لوحات: الكلمات مثل (رقم ، عين ، سين ، حسب ، دون ، فاصل ، لوحة) هي كلمات وصفية ولا تُعتبر لوحة.
+8. مصفوفة JSON فقط بالشكل التالي:
 [{"plate": "أ ب ج 1234", "found": true, "vehicle_type": "", "street_name": "", "district_name": "", "notes": "", "street_location": ""}]
 إذا كان التسجيل صامتاً أو لم يذكر أي لوحة، أرجع: []"""
     
